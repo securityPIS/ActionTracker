@@ -309,7 +309,7 @@ export default function App() {
   const [selectedTaskId, setSelectedTaskId] = useState(tasks[0]?.id || null);
   const [showMobileDetail, setShowMobileDetail] = useState(false);
   const [viewMode, setViewMode] = useState('list');
-  const [activePage, setActivePage] = useState('home');
+  const [activePage, setActivePage] = useState('jobtask');
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isUserMenuExpanded, setIsUserMenuExpanded] = useState(false);
   const [coeViewMode, setCoeViewMode] = useState('calendar');
@@ -356,7 +356,8 @@ export default function App() {
 
   // Form States
   const [evidenceText, setEvidenceText] = useState("");
-  const [evidenceFile, setEvidenceFile] = useState(null);
+  const [evidenceFiles, setEvidenceFiles] = useState([]);
+  const [evidenceLink, setEvidenceLink] = useState("");
   const [evidenceUploading, setEvidenceUploading] = useState(false);
   const evidenceFileInputRef = useRef(null);
   const [reviseComment, setReviseComment] = useState("");
@@ -417,7 +418,7 @@ export default function App() {
         setCurrentUser(userData);
         setUserRole(userData.role);
         setIsLoggedIn(true);
-        setActivePage('home');
+        setActivePage('jobtask');
       } else {
         // Fallback: find user profile by email in users collection
         const matchedUser = users.find(u => u.email === email);
@@ -430,7 +431,7 @@ export default function App() {
           setCurrentUser(matchedUser);
           setUserRole(matchedUser.role);
           setIsLoggedIn(true);
-          setActivePage('home');
+          setActivePage('jobtask');
         } else {
           setErrorCallback('Profil user tidak ditemukan.');
           await signOut(auth);
@@ -511,30 +512,67 @@ export default function App() {
 
   const submitEvidence = async () => {
     if (!selectedSubtask) return;
-    if (!evidenceFile && !evidenceText) return;
+    if (evidenceFiles.length === 0 && !evidenceText && !evidenceLink) {
+        alert("Pekerjaan wajib menyertakan setidaknya satu file atau satu tautan bukti, atau catatan.");
+        return;
+    }
     const parentId = selectedSubtask.parentId || selectedSubtask.taskId;
     const task = tasks.find(t => t.id === parentId);
     if (!task) return;
     setEvidenceUploading(true);
     try {
-      let evidenceFileName = null;
-      let evidenceUrl = null;
-      if (evidenceFile) {
-        const filePath = `evidence/${parentId}/${selectedSubtask.id}/${Date.now()}_${evidenceFile.name}`;
-        const fileRef = storageRef(storage, filePath);
-        await uploadBytes(fileRef, evidenceFile);
-        evidenceUrl = await getDownloadURL(fileRef);
-        evidenceFileName = evidenceFile.name;
+      let uploadedEvidenceUrls = selectedSubtask.evidenceUrls || [];
+      
+      if (evidenceFiles.length > 0) {
+        const uploadPromises = evidenceFiles.map(async (file) => {
+          const filePath = `evidence/${parentId}/${selectedSubtask.id}/${Date.now()}_${file.name}`;
+          const fileRef = storageRef(storage, filePath);
+          await uploadBytes(fileRef, file);
+          const url = await getDownloadURL(fileRef);
+          return { name: file.name, url };
+        });
+        
+        const newUrls = await Promise.all(uploadPromises);
+        uploadedEvidenceUrls = [...uploadedEvidenceUrls, ...newUrls];
       }
+      
+      // Handle legacy string evidence backward compatibility
+      let legacyEvidenceName = selectedSubtask.evidence || null;
+      let legacyEvidenceUrl = selectedSubtask.evidenceUrl || null;
+      
+      // if it's the first time uploading, keep legacy fields alive for simple UI
+      if (!legacyEvidenceName && uploadedEvidenceUrls.length > 0) {
+          legacyEvidenceName = uploadedEvidenceUrls[0].name;
+          legacyEvidenceUrl = uploadedEvidenceUrls[0].url;
+      }
+      
+      let evidenceLinksArray = selectedSubtask.evidenceLinks || [];
+      if (evidenceLink) {
+          evidenceLinksArray = [...evidenceLinksArray, evidenceLink];
+      }
+
       const updatedSubtasks = task.subtasks.map(sub => {
         if (sub.id === selectedSubtask.id) {
-          const commentText = evidenceText || (evidenceFileName ? `File: ${evidenceFileName}` : '');
+          
+          let commentFilesStr = "";
+          if (evidenceFiles.length > 0) {
+              commentFilesStr = `File: ${evidenceFiles.map(f=>f.name).join(', ')} `;
+          }
+          let commentLinkStr = "";
+          if (evidenceLink) {
+              commentLinkStr = `Link: ${evidenceLink} `;
+          }
+            
+          const commentText = evidenceText || (commentFilesStr + commentLinkStr).trim() || 'Evidence submitted';
           const newComment = { text: commentText, type: 'evidence', user: currentUser.name, timestamp: getCurrentDateTime() };
+          
           return {
             ...sub,
             status: 'waiting_review',
-            evidence: evidenceFileName || sub.evidence || 'Evidence submitted',
-            evidenceUrl: evidenceUrl || sub.evidenceUrl || null,
+            evidence: legacyEvidenceName,
+            evidenceUrl: legacyEvidenceUrl,
+            evidenceUrls: uploadedEvidenceUrls,
+            evidenceLinks: evidenceLinksArray,
             comments: [newComment, ...(sub.comments || [])],
             lastUpdated: getCurrentDateTime()
           };
@@ -543,7 +581,8 @@ export default function App() {
       });
       const updated = recalculateProgress(task, updatedSubtasks);
       await updateDoc(doc(db, 'tasks', parentId), { subtasks: updated.subtasks, progress: updated.progress });
-      setShowEvidenceModal(false); setShowUserTaskDetailModal(false); setSelectedSubtask(null); setEvidenceFile(null);
+      setShowEvidenceModal(false); setShowUserTaskDetailModal(false); setSelectedSubtask(null); 
+      setEvidenceFiles([]); setEvidenceLink(""); setEvidenceText("");
     } catch (error) {
       console.error('Error submitting evidence:', error);
       alert('Gagal mengupload file: ' + (error.message || 'Silakan coba lagi.'));
@@ -632,13 +671,23 @@ export default function App() {
     } else {
       // Handle Add New
       const newId = Date.now();
+      const calculateSubtaskDeadline = (mainDeadline, daysBeforeStr) => {
+          if (!mainDeadline || daysBeforeStr === "" || daysBeforeStr === null || daysBeforeStr === undefined) return "TBD";
+          const daysBefore = parseInt(daysBeforeStr, 10);
+          if (isNaN(daysBefore)) return daysBeforeStr; // fallback for backwards compatibility with legacy strings
+          
+          const d = new Date(mainDeadline);
+          d.setDate(d.getDate() - daysBefore);
+          return d.toISOString().split('T')[0];
+      };
+
       const selectedTemplate = selectedTemplateId ? taskTemplates.find(t => t.id === selectedTemplateId || t.id === Number(selectedTemplateId)) : null;
       const generatedSubtasks = selectedTemplate
         ? selectedTemplate.subtasks.map((s, i) => ({
           id: newId + i + 1,
           title: s.title,
           assignee: s.assignee || "Unassigned",
-          deadline: s.deadline || "TBD",
+          deadline: calculateSubtaskDeadline(newTaskDeadline, s.deadline),
           status: "pending",
           evidence: null,
           comments: [],
@@ -823,7 +872,7 @@ export default function App() {
   const openAddSubtaskModal = () => { setSubtaskFormTitle(""); setSubtaskFormAssignee(""); setSubtaskFormDeadline(""); setEditingSubtaskId(null); setShowSubtaskModal(true); };
   const openEditSubtaskModal = (sub) => { setSubtaskFormTitle(sub.title); setSubtaskFormAssignee(sub.assignee); setSubtaskFormDeadline(sub.deadline || ""); setEditingSubtaskId(sub.id); setShowSubtaskModal(true); };
   const openReviseModal = (task, sub) => { setSubtaskToRevise({ taskId: task.id, parentTitle: task.title, parentPic: task.pic, ...sub }); setReviseComment(""); setShowReviseModal(true); };
-  const openEvidenceModal = (task, sub) => { setSelectedSubtask({ taskId: task.id, parentTitle: task.title, parentPic: task.pic, ...sub }); setEvidenceText(""); setEvidenceFile(null); setShowEvidenceModal(true); };
+  const openEvidenceModal = (task, sub) => { setSelectedSubtask({ taskId: task.id, parentTitle: task.title, parentPic: task.pic, ...sub }); setEvidenceText(""); setEvidenceFiles([]); setEvidenceLink(""); setShowEvidenceModal(true); };
   const handleOpenEditUser = (user) => { setEditUserForm(user); setShowUserDetailModal(false); setShowEditUserModal(true); };
 
   const openEventModal = (ev = null) => {
@@ -943,8 +992,8 @@ export default function App() {
         </div>
 
         <nav className="p-4 space-y-1 overflow-y-auto h-[calc(100%-70px)]">
-          <button onClick={() => navigateTo('home')} className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-colors ${activePage === 'home' ? 'bg-blue-50 text-blue-600' : 'text-slate-600 hover:bg-slate-50'}`}>
-            <Home className="w-5 h-5" /><span className="font-medium text-sm">Home</span>
+          <button onClick={() => navigateTo('jobtask')} className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-colors ${activePage === 'jobtask' ? 'bg-blue-50 text-blue-600' : 'text-slate-600 hover:bg-slate-50'}`}>
+            <Home className="w-5 h-5" /><span className="font-medium text-sm">Jobtask</span>
           </button>
           <button onClick={() => navigateTo('user-task')} className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-colors ${activePage === 'user-task' ? 'bg-blue-50 text-blue-600' : 'text-slate-600 hover:bg-slate-50'}`}>
             <ClipboardList className="w-5 h-5" /><span className="font-medium text-sm">User Task</span>
@@ -993,7 +1042,7 @@ export default function App() {
 
       <div className="flex-1 flex overflow-hidden max-w-7xl mx-auto w-full bg-slate-50">
 
-        {activePage === 'home' && (
+        {activePage === 'jobtask' && (
           <>
             <aside className={`w-full md:w-1/3 border-r border-slate-200 bg-white flex-col h-full ${showMobileDetail ? 'hidden md:flex' : 'flex'}`}>
               <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
@@ -1142,12 +1191,34 @@ export default function App() {
                                         )}
                                       </div>
 
-                                      {subtask.evidence && (
-                                        <div className={`mt-3 border rounded-lg p-3 flex gap-3 shadow-sm text-sm ${subtask.status === 'revision' ? 'bg-red-50 border-red-200' : 'bg-white border-slate-200'}`}>
-                                          <FileText className={`w-5 h-5 flex-shrink-0 ${subtask.status === 'revision' ? 'text-red-500' : 'text-slate-500'}`} />
-                                          <div className="min-w-0 flex-1">
-                                            <p className="font-semibold text-slate-700">Lampiran:</p>
-                                            <a href={subtask.evidenceUrl || '#'} target={subtask.evidenceUrl ? '_blank' : undefined} rel="noopener noreferrer" className="text-blue-600 hover:underline truncate block">{subtask.evidence}</a>
+                                        {(subtask.evidence || (subtask.evidenceUrls && subtask.evidenceUrls.length > 0) || (subtask.evidenceLinks && subtask.evidenceLinks.length > 0)) && (
+                                          <div className={`mt-3 border rounded-lg p-3 flex gap-3 shadow-sm text-sm ${subtask.status === 'revision' ? 'bg-red-50 border-red-200' : 'bg-white border-slate-200'}`}>
+                                            <FileText className={`w-5 h-5 flex-shrink-0 mt-0.5 ${subtask.status === 'revision' ? 'text-red-500' : 'text-slate-500'}`} />
+                                            <div className="min-w-0 flex-1">
+                                              <p className="font-semibold text-slate-700 mb-1">Bukti / Lampiran:</p>
+                                              
+                                              {/* Legacy File */}
+                                              {subtask.evidence && (!subtask.evidenceUrls || subtask.evidenceUrls.length === 0) && (
+                                                <a href={subtask.evidenceUrl || '#'} target={subtask.evidenceUrl ? '_blank' : undefined} rel="noopener noreferrer" className="text-blue-600 hover:underline truncate block mb-1">{subtask.evidence}</a>
+                                              )}
+                                              
+                                              {/* Multiple Files */}
+                                              {subtask.evidenceUrls && subtask.evidenceUrls.length > 0 && (
+                                                <div className="space-y-1 mb-2">
+                                                   {subtask.evidenceUrls.map((file, idx) => (
+                                                      <span key={idx} className="flex"><a href={file.url} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline truncate block w-full">{idx+1}. {file.name}</a></span>
+                                                   ))}
+                                                </div>
+                                              )}
+
+                                              {/* External Links */}
+                                              {subtask.evidenceLinks && subtask.evidenceLinks.length > 0 && (
+                                                <div className="space-y-1 mb-2">
+                                                   {subtask.evidenceLinks.map((link, idx) => (
+                                                      <span key={idx} className="flex items-start gap-1"><ExternalLink className="w-3.5 h-3.5 mt-0.5 text-blue-500 flex-shrink-0" /><a href={link} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline truncate block w-full">{link}</a></span>
+                                                   ))}
+                                                </div>
+                                              )}
                                             {subtask.comments && subtask.comments.length > 0 && (
                                               <div className="mt-2 pt-2 border-t border-slate-200/50 space-y-2">
                                                 {subtask.comments.map((comment, idx) => (
@@ -1173,7 +1244,7 @@ export default function App() {
 
                                     {/* Action Buttons */}
                                     <div className="flex flex-col items-end gap-2 w-full md:w-auto md:min-w-[140px] mt-2 md:mt-0">
-                                      {(subtask.status === 'pending' || subtask.status === 'revision') && userRole === 'Assignee' && subtask.assignee === currentUser.name && (
+                                      {(subtask.status === 'pending' || subtask.status === 'revision') && (userRole === 'Assignee' || userRole === 'PIC') && subtask.assignee === currentUser.name && (
                                         <button onClick={() => openEvidenceModal(activeTask, subtask)} className={`flex items-center justify-center gap-2 px-4 py-2 text-white text-sm font-medium rounded-lg shadow-sm transition-colors w-full ${subtask.status === 'revision' ? 'bg-red-600 hover:bg-red-700' : 'bg-emerald-600 hover:bg-emerald-700'}`}>
                                           <Upload className="w-4 h-4" /> {subtask.status === 'revision' ? 'Perbaiki' : 'Lapor'}
                                         </button>
@@ -1321,28 +1392,49 @@ export default function App() {
               </div>
               <div className="space-y-8">
                 {tasks.map(project => {
-                  const files = project.subtasks.filter(s =>
-                    s.evidence &&
-                    (s.evidence.toLowerCase().includes(fileSearch.toLowerCase()) ||
-                      s.title.toLowerCase().includes(fileSearch.toLowerCase()))
-                  ).map(s => ({ ...s, projectId: project.id }));
+                  // Kumpulkan semua file dari logik lama (evidence) maupun logik baru (evidenceUrls)
+                  let files = [];
+                  project.subtasks.forEach(s => {
+                      if (s.evidenceUrls && s.evidenceUrls.length > 0) {
+                          s.evidenceUrls.forEach(f => {
+                              if (f.name.toLowerCase().includes(fileSearch.toLowerCase()) || s.title.toLowerCase().includes(fileSearch.toLowerCase())) {
+                                  files.push({ ...s, projectId: project.id, displayEvidence: f.name, displayUrl: f.url });
+                              }
+                          });
+                      } else if (s.evidence) {
+                          if (s.evidence.toLowerCase().includes(fileSearch.toLowerCase()) || s.title.toLowerCase().includes(fileSearch.toLowerCase())) {
+                              files.push({ ...s, projectId: project.id, displayEvidence: s.evidence, displayUrl: s.evidenceUrl });
+                          }
+                      }
+                      
+                      // Masukkan juga link
+                      if (s.evidenceLinks && s.evidenceLinks.length > 0) {
+                          s.evidenceLinks.forEach(link => {
+                              if (link.toLowerCase().includes(fileSearch.toLowerCase()) || s.title.toLowerCase().includes(fileSearch.toLowerCase())) {
+                                  files.push({ ...s, projectId: project.id, displayEvidence: link, displayUrl: link, isLink: true });
+                              }
+                          })
+                      }
+                  });
+                  
                   if (files.length === 0) return null;
                   return (
                     <div key={project.id}>
                       <h3 className="text-lg font-bold text-slate-700 mb-3 pl-1 flex items-center gap-2"><Briefcase className="w-4 h-4 text-slate-400" />{project.title}</h3>
                       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
-                        {files.map(file => {
-                          const meta = getFileMeta(file.evidence);
+                        {files.map((file, idx) => {
+                          const isLink = file.isLink;
+                          const meta = isLink ? { icon: ExternalLink, color: 'text-blue-500', bg: 'bg-blue-50', label: 'LINK', type: 'link' } : getFileMeta(file.displayEvidence);
                           const Icon = meta.icon;
                           return (
-                            <a href={file.evidenceUrl || '#'} target={file.evidenceUrl ? '_blank' : undefined} rel="noopener noreferrer" key={file.id} className={`group bg-white rounded-xl border border-slate-200 shadow-sm hover:shadow-md transition-all overflow-hidden flex flex-col ${file.evidenceUrl ? 'cursor-pointer' : 'cursor-default'}`} onClick={(e) => { if (!file.evidenceUrl) { e.preventDefault(); } }}>
+                            <a href={file.displayUrl || '#'} target={file.displayUrl ? '_blank' : undefined} rel="noopener noreferrer" key={`${file.id}-${idx}`} className={`group bg-white rounded-xl border border-slate-200 shadow-sm hover:shadow-md transition-all overflow-hidden flex flex-col ${file.displayUrl ? 'cursor-pointer' : 'cursor-default'}`} onClick={(e) => { if (!file.displayUrl) { e.preventDefault(); } }}>
                               <div className={`h-32 flex items-center justify-center relative overflow-hidden ${meta.bg}`}>
-                                {meta.type === 'image' ? <img src={file.evidenceUrl || `https://via.placeholder.com/400x300/e2e8f0/94a3b8?text=${encodeURIComponent(file.evidence)}`} alt={file.evidence} className="w-full h-full object-cover" /> : <Icon className={`w-12 h-12 ${meta.color} group-hover:scale-110 transition-transform`} />}
+                                {meta.type === 'image' ? <img src={file.displayUrl || `https://via.placeholder.com/400x300/e2e8f0/94a3b8?text=${encodeURIComponent(file.displayEvidence)}`} alt={file.displayEvidence} className="w-full h-full object-cover" /> : <Icon className={`w-12 h-12 ${meta.color} group-hover:scale-110 transition-transform`} />}
                                 <div className={`absolute top-2 right-2 px-1.5 py-0.5 rounded text-[10px] font-bold uppercase shadow-sm bg-white/90 ${meta.color}`}>{meta.label}</div>
-                                {file.evidenceUrl && <div className="absolute inset-0 bg-black/0 group-hover:bg-black/30 transition-colors flex items-center justify-center opacity-0 group-hover:opacity-100"><span className="bg-white text-slate-700 text-xs font-semibold px-3 py-1.5 rounded-full shadow-md flex items-center gap-1"><ExternalLink className="w-3 h-3" /> Download</span></div>}
+                                {file.displayUrl && <div className="absolute inset-0 bg-black/0 group-hover:bg-black/30 transition-colors flex items-center justify-center opacity-0 group-hover:opacity-100"><span className="bg-white text-slate-700 text-xs font-semibold px-3 py-1.5 rounded-full shadow-md flex items-center gap-1"><ExternalLink className="w-3 h-3" /> {isLink ? 'Buka Link' : 'Download'}</span></div>}
                               </div>
                               <div className="p-3 flex-1 flex flex-col justify-between">
-                                <div><h4 className="text-sm font-semibold text-slate-700 line-clamp-2 mb-1" title={file.evidence}>{file.evidence}</h4><p className="text-xs text-slate-500 flex items-center gap-1"><span className="truncate">Subtask: {file.title}</span></p></div>
+                                <div><h4 className="text-sm font-semibold text-slate-700 line-clamp-2 mb-1" title={file.displayEvidence}>{file.displayEvidence}</h4><p className="text-xs text-slate-500 flex items-center gap-1"><span className="truncate">Subtask: {file.title}</span></p></div>
                                 <div className="mt-3 flex items-center justify-between text-xs text-slate-400 pt-2 border-t border-slate-100">
                                   <span>{file.lastUpdated ? file.lastUpdated.split(' ')[0] : '-'}</span>
                                   <div title={file.status}>{file.status === 'completed' && <CheckCircle className="w-4 h-4 text-green-500" />}{file.status === 'waiting_review' && <Clock className="w-4 h-4 text-yellow-500" />}{file.status === 'revision' && <AlertTriangle className="w-4 h-4 text-red-500" />}{file.status === 'pending' && <Circle className="w-4 h-4 text-slate-300" />}</div>
@@ -1355,7 +1447,7 @@ export default function App() {
                     </div>
                   );
                 })}
-                {tasks.every(t => t.subtasks.every(s => !s.evidence)) && <div className="text-center py-12 text-slate-400"><FileText className="w-12 h-12 mx-auto mb-3 opacity-20" /><p>Belum ada file yang diunggah.</p></div>}
+                {tasks.every(t => t.subtasks.every(s => !s.evidence && (!s.evidenceUrls || s.evidenceUrls.length === 0) && (!s.evidenceLinks || s.evidenceLinks.length === 0))) && <div className="text-center py-12 text-slate-400"><FileText className="w-12 h-12 mx-auto mb-3 opacity-20" /><p>Belum ada file yang diunggah.</p></div>}
               </div>
             </div>
           </main>
@@ -1655,7 +1747,7 @@ export default function App() {
                 <div>
                   <h3 className="text-lg font-bold text-slate-800 leading-tight mb-1">{selectedSubtask.title}</h3>
                   <div className="flex items-center gap-2 text-xs text-slate-500">
-                    <button onClick={() => { setSelectedTaskId(selectedSubtask.parentId); setActivePage('home'); setShowMobileDetail(true); setShowUserTaskDetailModal(false); }} className="bg-blue-50 text-blue-600 px-2 py-0.5 rounded hover:bg-blue-100 transition-colors flex items-center gap-1 font-medium"><Briefcase className="w-3 h-3" /> Parent Project: {selectedSubtask.parentTitle}</button>
+                    <button onClick={() => { setSelectedTaskId(selectedSubtask.parentId); setActivePage('jobtask'); setShowMobileDetail(true); setShowUserTaskDetailModal(false); }} className="bg-blue-50 text-blue-600 px-2 py-0.5 rounded hover:bg-blue-100 transition-colors flex items-center gap-1 font-medium"><Briefcase className="w-3 h-3" /> Parent Project: {selectedSubtask.parentTitle}</button>
                   </div>
                 </div>
                 <button onClick={() => setShowUserTaskDetailModal(false)} className="text-slate-400 hover:text-slate-600 p-1 bg-slate-50 rounded-full transition-colors"><X className="w-5 h-5" /></button>
@@ -1666,15 +1758,45 @@ export default function App() {
                   <div className="bg-slate-50 p-3 rounded-lg border border-slate-100"><p className="text-xs text-slate-500 font-semibold uppercase mb-1">Status</p><div className="text-sm font-medium">{selectedSubtask.status === 'completed' && <span className="text-green-600 flex items-center gap-1"><CheckCircle className="w-4 h-4" /> Completed</span>}{selectedSubtask.status === 'waiting_review' && <span className="text-yellow-600 flex items-center gap-1"><Clock className="w-4 h-4" /> Waiting Review</span>}{selectedSubtask.status === 'revision' && <span className="text-red-600 flex items-center gap-1"><AlertTriangle className="w-4 h-4" /> Revision Needed</span>}{selectedSubtask.status === 'pending' && <span className="text-slate-600 flex items-center gap-1"><Circle className="w-4 h-4" /> Pending</span>}</div></div>
                   <div className="col-span-2 bg-slate-50 p-3 rounded-lg border border-slate-100"><p className="text-xs text-slate-500 font-semibold uppercase mb-1">Assignee</p><p className="text-sm font-medium text-slate-800 flex items-center gap-2"><UserAvatar name={selectedSubtask.assignee} className="w-5 h-5" />{selectedSubtask.assignee}</p></div>
                 </div>
-                {selectedSubtask.evidence && (
+                {(selectedSubtask.evidence || (selectedSubtask.evidenceUrls && selectedSubtask.evidenceUrls.length > 0) || (selectedSubtask.evidenceLinks && selectedSubtask.evidenceLinks.length > 0)) && (
                   <div className="mb-6">
                     <h4 className="text-sm font-bold text-slate-700 mb-2">Riwayat Bukti & Catatan</h4>
                     <div className={`border rounded-lg p-3 text-sm ${selectedSubtask.status === 'revision' ? 'bg-red-50 border-red-200' : 'bg-slate-50 border-slate-200'}`}>
                       <div className="flex items-start gap-3">
                         <FileText className={`w-5 h-5 flex-shrink-0 mt-0.5 ${selectedSubtask.status === 'revision' ? 'text-red-500' : 'text-slate-500'}`} />
-                        <div>
-                          <p className="font-semibold text-slate-800 mb-1">File Terlampir:</p>
-                          <a href={selectedSubtask.evidenceUrl || '#'} target={selectedSubtask.evidenceUrl ? '_blank' : undefined} rel="noopener noreferrer" className="text-blue-600 hover:underline block mb-2">{selectedSubtask.evidence}</a>
+                        <div className="w-full relative pr-2">
+                          <p className="font-semibold text-slate-800 mb-2">Bukti Terlampir:</p>
+                          
+                          {/* Legacy File */}
+                          {selectedSubtask.evidence && (!selectedSubtask.evidenceUrls || selectedSubtask.evidenceUrls.length === 0) && (
+                            <div className="bg-white border border-slate-200 rounded p-2 mb-2 shadow-sm">
+                              <a href={selectedSubtask.evidenceUrl || '#'} target={selectedSubtask.evidenceUrl ? '_blank' : undefined} rel="noopener noreferrer" className="text-blue-600 hover:underline truncate block w-full font-medium" title={selectedSubtask.evidence}>{selectedSubtask.evidence}</a>
+                            </div>
+                          )}
+
+                          {/* Multiple Files */}
+                          {selectedSubtask.evidenceUrls && selectedSubtask.evidenceUrls.length > 0 && (
+                            <div className="space-y-1.5 mb-3">
+                               {selectedSubtask.evidenceUrls.map((file, idx) => (
+                                  <div key={idx} className="bg-white border border-slate-200 rounded p-2 shadow-sm flex items-center gap-2">
+                                    <FileText className="w-4 h-4 text-slate-400 flex-shrink-0" />
+                                    <a href={file.url} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline truncate block w-full text-sm font-medium" title={file.name}>{file.name}</a>
+                                  </div>
+                               ))}
+                            </div>
+                          )}
+
+                          {/* External Links */}
+                          {selectedSubtask.evidenceLinks && selectedSubtask.evidenceLinks.length > 0 && (
+                            <div className="space-y-1.5 mb-3">
+                               {selectedSubtask.evidenceLinks.map((link, idx) => (
+                                  <div key={idx} className="bg-blue-50 border border-blue-100 rounded p-2 shadow-sm flex items-center gap-2">
+                                     <ExternalLink className="w-4 h-4 text-blue-500 flex-shrink-0" />
+                                     <a href={link} target="_blank" rel="noopener noreferrer" className="text-blue-700 hover:underline truncate block w-full text-sm font-medium" title={link}>{link}</a>
+                                  </div>
+                               ))}
+                            </div>
+                          )}
                           {selectedSubtask.comments && selectedSubtask.comments.length > 0 && (
                             <div className="mt-2 pt-2 border-t border-slate-200/50 space-y-3">
                               {selectedSubtask.comments.map((comment, idx) => (
@@ -1696,19 +1818,42 @@ export default function App() {
                     </div>
                   </div>
                 )}
-                {userRole === 'Assignee' && (selectedSubtask.status === 'pending' || selectedSubtask.status === 'revision') && selectedSubtask.assignee === currentUser.name && (
+                {(userRole === 'Assignee' || userRole === 'PIC') && (selectedSubtask.status === 'pending' || selectedSubtask.status === 'revision') && selectedSubtask.assignee === currentUser.name && (
                   <div className="border-t border-slate-100 pt-5 mt-2">
                     <h4 className="text-sm font-bold text-slate-700 mb-3 flex items-center gap-2"><Upload className="w-4 h-4 text-blue-600" /> Upload Pekerjaan & Komentar</h4>
                     <div className="space-y-4">
-                      <div className="border-2 border-dashed border-slate-300 rounded-lg p-4 flex flex-col items-center justify-center text-slate-500 cursor-pointer hover:bg-blue-50 hover:border-blue-400 transition-all group"><div className="bg-blue-50 p-2 rounded-full mb-2 group-hover:scale-110 transition-transform"><ImageIcon className="w-5 h-5 text-blue-500" /></div><span className="text-xs font-medium text-slate-600">Klik untuk upload file baru</span></div>
-                      <div><label className="block text-xs font-medium text-slate-700 mb-1">Catatan / Komentar</label><textarea className="w-full border border-slate-300 rounded-lg p-3 text-sm focus:ring-2 focus:ring-emerald-500 focus:outline-none transition-all" rows="3" placeholder="Tuliskan detail pengerjaan..." value={evidenceText} onChange={(e) => setEvidenceText(e.target.value)}></textarea></div>
+                      <div className="border-2 border-dashed border-slate-300 rounded-lg p-4 flex flex-col items-center justify-center text-slate-500 hover:bg-blue-50 hover:border-blue-400 transition-all group relative">
+                        <input type="file" multiple className="absolute inset-0 w-full h-full opacity-0 cursor-pointer" onChange={(e) => { if (e.target.files) setEvidenceFiles(Array.from(e.target.files)); }} />
+                        <div className="bg-blue-50 p-2 rounded-full mb-2 group-hover:scale-110 transition-transform"><ImageIcon className="w-5 h-5 text-blue-500" /></div>
+                        <span className="text-xs font-medium text-slate-600 mb-1">Klik atau Drop file di sini</span>
+                        <span className="text-[10px] text-slate-400">Bisa pilih lebih dari 1 file</span>
+                      </div>
+                      
+                      {/* Tampilkan Daftar File Terpilih */}
+                      {evidenceFiles.length > 0 && (
+                          <div className="bg-blue-50 border border-blue-100 p-3 rounded-lg space-y-2">
+                             <p className="text-xs font-bold text-blue-800">File Terpilih ({evidenceFiles.length}):</p>
+                             {evidenceFiles.map((f, i) => (
+                                <div key={i} className="flex justify-between items-center text-sm bg-white px-2 py-1 rounded shadow-sm border border-slate-100">
+                                    <span className="text-slate-700 truncate w-3/4" title={f.name}>{f.name}</span>
+                                    <button onClick={() => setEvidenceFiles(evidenceFiles.filter((_, idx)=>idx!==i))} className="text-red-500 hover:bg-red-50 p-1 rounded-full"><X className="w-3 h-3" /></button>
+                                </div>
+                             ))}
+                          </div>
+                      )}
+
+                      <div><label className="block text-xs font-medium text-slate-700 mb-1">Tautan Bukti (URL)</label>
+                           <input type="url" className="w-full border border-slate-300 rounded-lg p-3 text-sm focus:ring-2 focus:ring-emerald-500 focus:outline-none transition-all" placeholder="https://..." value={evidenceLink} onChange={(e) => setEvidenceLink(e.target.value)} />
+                      </div>
+                      
+                      <div><label className="block text-xs font-medium text-slate-700 mb-1">Catatan / Komentar (Opsional)</label><textarea className="w-full border border-slate-300 rounded-lg p-3 text-sm focus:ring-2 focus:ring-emerald-500 focus:outline-none transition-all" rows="3" placeholder="Tuliskan detail pengerjaan..." value={evidenceText} onChange={(e) => setEvidenceText(e.target.value)}></textarea></div>
                     </div>
                   </div>
                 )}
               </div>
               <div className="bg-slate-50 p-4 border-t border-slate-200 flex justify-end gap-3 sticky bottom-0">
                 <button onClick={() => setShowUserTaskDetailModal(false)} className="px-4 py-2 text-slate-600 hover:text-slate-800 text-sm font-medium rounded-lg hover:bg-white transition-colors">Tutup</button>
-                {userRole === 'Assignee' && (selectedSubtask.status === 'pending' || selectedSubtask.status === 'revision') && selectedSubtask.assignee === currentUser.name && <button onClick={submitEvidence} className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium rounded-lg shadow-sm flex items-center gap-2 transition-colors"><Save className="w-4 h-4" /> Simpan & Kirim</button>}
+                {(userRole === 'Assignee' || userRole === 'PIC') && (selectedSubtask.status === 'pending' || selectedSubtask.status === 'revision') && selectedSubtask.assignee === currentUser.name && <button onClick={submitEvidence} className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium rounded-lg shadow-sm flex items-center gap-2 transition-colors"><Save className="w-4 h-4" /> Simpan & Kirim</button>}
                 {userRole === 'PIC' && selectedSubtask.status === 'waiting_review' && (
                   <>
                     <button onClick={() => { openReviseModal({ id: selectedSubtask.parentId, title: selectedSubtask.parentTitle, pic: selectedSubtask.parentPic }, selectedSubtask); setShowUserTaskDetailModal(false); }} className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-sm font-medium rounded-lg shadow-sm flex items-center gap-2 transition-colors"><AlertCircle className="w-4 h-4" /> Revise</button>
@@ -1726,31 +1871,52 @@ export default function App() {
       {
         showEvidenceModal && selectedSubtask && (
           <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4 backdrop-blur-sm">
-            <div className="bg-white rounded-xl shadow-xl w-full max-w-md overflow-hidden">
-              <div className="bg-slate-50 p-4 border-b border-slate-200 flex justify-between"><h3 className="font-bold text-slate-800">{selectedSubtask.status === 'revision' ? 'Perbaiki Laporan' : 'Lapor Pekerjaan Selesai'}</h3><button onClick={() => setShowEvidenceModal(false)}><X className="w-5 h-5 text-slate-400" /></button></div>
-              <div className="p-6 space-y-4">
-                <input type="file" ref={evidenceFileInputRef} className="hidden" onChange={(e) => { if (e.target.files && e.target.files[0]) setEvidenceFile(e.target.files[0]); }} />
-                <div onClick={() => evidenceFileInputRef.current?.click()} className={`border-2 border-dashed rounded-lg p-6 flex flex-col items-center cursor-pointer transition-colors ${evidenceFile ? 'border-emerald-400 bg-emerald-50' : 'border-slate-300 text-slate-500 hover:bg-blue-50 hover:border-blue-400'}`}>
-                  {evidenceFile ? (
+            <div className="bg-white rounded-xl shadow-xl w-full max-w-md overflow-hidden flex flex-col max-h-[90vh]">
+              <div className="bg-slate-50 p-4 border-b border-slate-200 flex justify-between sticky top-0 z-10"><h3 className="font-bold text-slate-800">{selectedSubtask.status === 'revision' ? 'Perbaiki Laporan' : 'Lapor Pekerjaan Selesai'}</h3><button onClick={() => setShowEvidenceModal(false)}><X className="w-5 h-5 text-slate-400 hover:text-slate-600" /></button></div>
+              <div className="p-6 space-y-4 overflow-y-auto">
+                
+                <label className={`block border-2 border-dashed rounded-lg p-6 flex flex-col items-center cursor-pointer transition-colors relative ${evidenceFiles.length > 0 ? 'border-emerald-400 bg-emerald-50' : 'border-slate-300 text-slate-500 hover:bg-blue-50 hover:border-blue-400'}`}>
+                  <input type="file" multiple className="hidden" onChange={(e) => { if (e.target.files) setEvidenceFiles(Array.from(e.target.files)); }} />
+                  {evidenceFiles.length > 0 ? (
                     <>
                       <CheckCircle className="w-6 h-6 text-emerald-500 mb-2" />
-                      <span className="text-sm font-medium text-emerald-700 truncate max-w-full">{evidenceFile.name}</span>
-                      <span className="text-xs text-slate-400 mt-1">{(evidenceFile.size / 1024).toFixed(1)} KB — Klik untuk ganti file</span>
+                      <span className="text-sm font-medium text-emerald-700">{evidenceFiles.length} File Terpilih</span>
+                      <span className="text-xs text-slate-400 mt-1">Klik untuk mengganti</span>
                     </>
                   ) : (
                     <>
                       <Upload className="w-6 h-6 text-blue-500 mb-2" />
-                      <span className="text-sm">Klik upload file</span>
-                      <span className="text-xs text-slate-400 mt-1">PDF, DOC, XLS, JPG, PNG, dll.</span>
+                      <span className="text-sm">Klik upload dokumen / file</span>
+                      <span className="text-xs text-slate-400 mt-1">Bisa pilih multiple file</span>
                     </>
                   )}
+                </label>
+                
+                {evidenceFiles.length > 0 && (
+                    <div className="bg-slate-50 border border-slate-200 rounded-lg p-2 max-h-32 overflow-y-auto space-y-1">
+                        {evidenceFiles.map((f, i) => (
+                            <div key={i} className="flex justify-between items-center text-xs bg-white px-2 py-1.5 rounded shadow-sm border border-slate-100">
+                                <span className="text-slate-700 truncate min-w-0" title={f.name}>{f.name}</span>
+                                <button onClick={() => setEvidenceFiles(evidenceFiles.filter((_, idx)=>idx!==i))} className="text-red-500 hover:text-red-700 ml-2 flex-shrink-0"><X className="w-3.5 h-3.5" /></button>
+                            </div>
+                        ))}
+                    </div>
+                )}
+                
+                <div>
+                   <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Link URL (Opsional)</label>
+                   <input type="url" className="w-full border p-2.5 rounded-lg text-sm bg-white" placeholder="Contoh: https://drive.google.com/..." value={evidenceLink} onChange={(e) => setEvidenceLink(e.target.value)} />
                 </div>
-                <textarea className="w-full border p-3 rounded-lg text-sm" rows="3" value={evidenceText} onChange={(e) => setEvidenceText(e.target.value)} placeholder="Catatan..."></textarea>
+
+                <div>
+                   <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Catatan</label>
+                   <textarea className="w-full border p-3 rounded-lg text-sm bg-white" rows="2" value={evidenceText} onChange={(e) => setEvidenceText(e.target.value)} placeholder="Tulis catatan pendek (opsional)"></textarea>
+                </div>
               </div>
-              <div className="bg-slate-50 p-4 flex justify-end gap-2 border-t">
-                <button onClick={() => { setShowEvidenceModal(false); setEvidenceFile(null); }} className="px-4 py-2 text-sm text-slate-600">Batal</button>
-                <button onClick={submitEvidence} disabled={evidenceUploading || (!evidenceFile && !evidenceText)} className={`px-4 py-2 text-white text-sm rounded-lg flex items-center gap-2 ${evidenceUploading || (!evidenceFile && !evidenceText) ? 'bg-slate-400 cursor-not-allowed' : 'bg-emerald-600 hover:bg-emerald-700'}`}>
-                  {evidenceUploading ? <><div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div> Mengupload...</> : 'Kirim Laporan'}
+              <div className="bg-slate-50 p-4 flex justify-end gap-2 border-t sticky bottom-0">
+                <button onClick={() => { setShowEvidenceModal(false); setEvidenceFiles([]); setEvidenceLink(""); setEvidenceText(""); }} className="px-4 py-2 text-sm text-slate-600 bg-white border border-slate-200 rounded-lg hover:bg-slate-100">Batal</button>
+                <button onClick={submitEvidence} disabled={evidenceUploading || (evidenceFiles.length === 0 && !evidenceText && !evidenceLink)} className={`px-4 py-2 text-white text-sm font-medium rounded-lg flex items-center gap-2 transition-colors ${evidenceUploading || (evidenceFiles.length === 0 && !evidenceText && !evidenceLink) ? 'bg-slate-400 cursor-not-allowed' : 'bg-emerald-600 hover:bg-emerald-700 shadow-sm'}`}>
+                  {evidenceUploading ? <><div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div> Menyimpan...</> : 'Kirim Laporan'}
                 </button>
               </div>
             </div>
@@ -2106,11 +2272,14 @@ export default function App() {
                       <div className="flex-1 space-y-2">
                         <input type="text" className="w-full border border-slate-300 rounded-lg p-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none" value={sub.title} onChange={(e) => updateTemplateSubtaskRow(idx, 'title', e.target.value)} placeholder="Nama Subtask" />
                         <div className="flex gap-2">
-                          <select className="flex-1 border border-slate-300 rounded-lg p-2 text-sm bg-white focus:ring-2 focus:ring-blue-500 focus:outline-none" value={sub.assignee} onChange={(e) => updateTemplateSubtaskRow(idx, 'assignee', e.target.value)}>
+                          <select className="flex-1 w-full border border-slate-300 rounded-lg p-2 text-sm bg-white focus:ring-2 focus:ring-blue-500 focus:outline-none" value={sub.assignee} onChange={(e) => updateTemplateSubtaskRow(idx, 'assignee', e.target.value)}>
                             <option value="">-- Assignee (Opsional) --</option>
                             {users.map(user => (<option key={user.id} value={user.name}>{user.name}</option>))}
                           </select>
-                          <input type="date" className="border border-slate-300 rounded-lg p-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none" value={sub.deadline} onChange={(e) => updateTemplateSubtaskRow(idx, 'deadline', e.target.value)} />
+                          <div className="flex items-center gap-2 border border-slate-300 rounded-lg p-2 bg-white focus-within:ring-2 focus-within:ring-blue-500">
+                            <span className="text-sm text-slate-500 font-semibold whitespace-nowrap">H -</span>
+                            <input type="number" min="0" className="w-16 flex-1 text-sm outline-none bg-transparent" placeholder="Hari" value={sub.deadline} onChange={(e) => updateTemplateSubtaskRow(idx, 'deadline', e.target.value)} title="Masukkan angka (H minus hari dari deadline project)" />
+                          </div>
                         </div>
                       </div>
                       {templateForm.subtasks.length > 1 && (
