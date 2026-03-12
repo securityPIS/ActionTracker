@@ -1,0 +1,670 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Acak Nama - Offline Version</title>
+    <style>
+        :root {
+            --primary: #2563eb;
+            --primary-dark: #1e40af;
+            --secondary: #f59e0b;
+            --bg: #f3f4f6;
+            --text: #1f2937;
+            --sidebar-bg: #ffffff;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            background-color: var(--bg);
+            color: var(--text);
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            overflow: hidden;
+            user-select: none; /* Mencegah seleksi teks saat klik cepat */
+        }
+
+        header {
+            background: white;
+            padding: 10px 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            z-index: 10;
+            text-align: center;
+        }
+
+        h1 {
+            margin: 0;
+            font-size: 1.5rem;
+            color: var(--primary);
+        }
+
+        .container {
+            display: flex;
+            flex: 1;
+            overflow: hidden;
+            position: relative;
+        }
+
+        /* Area Kiri: Tampilan Acak Utama */
+        .main-section {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            background: radial-gradient(circle, #e0e7ff 0%, #f3f4f6 70%);
+            padding: 20px;
+        }
+
+        .display-box {
+            background: white;
+            width: 90%;
+            max-width: 600px;
+            height: 300px;
+            border-radius: 20px;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.1);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-bottom: 30px;
+            border: 4px solid var(--primary);
+            position: relative;
+            overflow: hidden;
+        }
+
+        .rolling-text {
+            font-size: 3rem;
+            font-weight: 800;
+            color: var(--text);
+            text-align: center;
+            padding: 20px;
+            line-height: 1.2;
+            word-break: break-word;
+        }
+
+        .spin-btn {
+            padding: 15px 50px;
+            font-size: 1.5rem;
+            font-weight: bold;
+            color: white;
+            background: var(--primary);
+            border: none;
+            border-radius: 50px;
+            cursor: pointer;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.2);
+            transition: all 0.2s;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .spin-btn:hover:not(:disabled) {
+            background: var(--primary-dark);
+            transform: translateY(-2px);
+            box-shadow: 0 6px 12px rgba(0,0,0,0.3);
+        }
+
+        .spin-btn:active:not(:disabled) {
+            transform: translateY(1px);
+        }
+
+        .spin-btn:disabled {
+            background: #9ca3af;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        /* Area Kanan: Sidebar Pemenang */
+        .sidebar {
+            width: 350px;
+            background: var(--sidebar-bg);
+            border-left: 1px solid #e5e7eb;
+            display: flex;
+            flex-direction: column;
+            box-shadow: -2px 0 10px rgba(0,0,0,0.05);
+            z-index: 20;
+        }
+
+        .sidebar-header {
+            padding: 20px;
+            background: var(--primary);
+            color: white;
+        }
+
+        .sidebar-header h2 {
+            margin: 0;
+            font-size: 1.2rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .counter {
+            background: rgba(255,255,255,0.2);
+            padding: 4px 8px;
+            border-radius: 12px;
+            font-size: 0.9rem;
+        }
+
+        .winners-list {
+            flex: 1;
+            overflow-y: auto;
+            padding: 10px;
+            margin: 0;
+            list-style: none;
+        }
+
+        .winner-item {
+            background: white;
+            border: 1px solid #e5e7eb;
+            margin-bottom: 8px;
+            padding: 10px 15px;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            animation: slideIn 0.5s ease-out;
+            border-left: 4px solid var(--secondary);
+            font-weight: 500;
+        }
+
+        .winner-number {
+            background: var(--secondary);
+            color: white;
+            width: 24px;
+            height: 24px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-right: 10px;
+            font-size: 0.8rem;
+            font-weight: bold;
+            flex-shrink: 0;
+        }
+
+        .empty-state {
+            text-align: center;
+            color: #9ca3af;
+            margin-top: 50px;
+            font-style: italic;
+        }
+
+        /* Modal Pemenang */
+        .modal-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.5);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 100;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.3s;
+        }
+
+        .modal-overlay.active {
+            opacity: 1;
+            pointer-events: all;
+        }
+
+        .modal-content {
+            background: white;
+            padding: 40px;
+            border-radius: 20px;
+            text-align: center;
+            transform: scale(0.8);
+            transition: transform 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+            max-width: 90%;
+            width: 400px;
+            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1);
+        }
+
+        .modal-overlay.active .modal-content {
+            transform: scale(1);
+        }
+
+        .winner-announce {
+            font-size: 2rem;
+            font-weight: bold;
+            color: var(--primary);
+            margin: 20px 0;
+            word-wrap: break-word;
+            line-height: 1.2;
+        }
+
+        .close-modal-btn {
+            background: var(--text);
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 1rem;
+            margin-top: 10px;
+        }
+
+        /* Responsive */
+        @media (max-width: 768px) {
+            .container {
+                flex-direction: column;
+                overflow-y: auto;
+            }
+            .main-section {
+                min-height: 50vh;
+                padding: 10px;
+            }
+            .sidebar {
+                width: 100%;
+                height: 50vh;
+                border-left: none;
+                border-top: 1px solid #e5e7eb;
+            }
+            .display-box {
+                height: 200px;
+            }
+            .rolling-text {
+                font-size: 2rem;
+            }
+            h1 { font-size: 1.2rem; }
+        }
+
+        @keyframes slideIn {
+            from { transform: translateX(20px); opacity: 0; }
+            to { transform: translateX(0); opacity: 1; }
+        }
+        
+        /* Animasi teks bergetar saat mengacak */
+        .shaking {
+            animation: shake 0.1s infinite;
+        }
+        
+        @keyframes shake {
+            0% { transform: translate(1px, 1px) rotate(0deg); }
+            10% { transform: translate(-1px, -2px) rotate(-1deg); }
+            20% { transform: translate(-3px, 0px) rotate(1deg); }
+            30% { transform: translate(3px, 2px) rotate(0deg); }
+            40% { transform: translate(1px, -1px) rotate(1deg); }
+            50% { transform: translate(-1px, 2px) rotate(-1deg); }
+            60% { transform: translate(-3px, 1px) rotate(0deg); }
+            70% { transform: translate(3px, 1px) rotate(-1deg); }
+            80% { transform: translate(-1px, -1px) rotate(1deg); }
+            90% { transform: translate(1px, 2px) rotate(0deg); }
+            100% { transform: translate(1px, -2px) rotate(-1deg); }
+        }
+    </style>
+</head>
+<body>
+
+<header>
+    <h1>🎯 SPIN NAME</h1>
+</header>
+
+<div class="container">
+    <!-- Bagian Kiri: Area Acak -->
+    <div class="main-section">
+        <div class="display-box">
+            <div id="rollingText" class="rolling-text">SIAP?</div>
+        </div>
+        
+        <button id="spinBtn" class="spin-btn">ACAK NAMA</button>
+    </div>
+
+    <!-- Bagian Kanan: Sidebar Pemenang -->
+    <div class="sidebar">
+        <div class="sidebar-header">
+            <h2>
+                Pemenang 
+                <span class="counter" id="winnerCount">0 / 20</span>
+            </h2>
+        </div>
+        <ul id="winnersList" class="winners-list">
+            <li class="empty-state">Belum ada pemenang.<br>Klik tombol acak!</li>
+        </ul>
+    </div>
+</div>
+
+<!-- Modal Pop-up -->
+<div class="modal-overlay" id="winnerModal">
+    <div class="modal-content">
+        <h3>🎉 Selamat Kepada 🎉</h3>
+        <div class="winner-announce" id="winnerText">Nama Pemenang</div>
+        <button class="close-modal-btn" onclick="closeModal()">Lanjut Acak</button>
+    </div>
+</div>
+
+<!-- Efek Konfeti -->
+<canvas id="confettiCanvas" style="position:fixed; top:0; left:0; width:100%; height:100%; pointer-events:none; z-index:99; display:none;"></canvas>
+
+<script>
+    // 1. Data Peserta
+    const initialNames = [
+        "Arief Hidayat", "Tola Bugis", "Fadli Dzii Faza", "Sapriandi Didit", "Hendri Kuswanto",
+        "Ikhwan Nuttaqwa", "Tatang Prayoga", "Didi Pramudia", "Defen Kurniawan", "Akhmad Riduan",
+        "Made Naryana", "Fikri Yadi", "Ikhsan Ramadhan", "Sayied Assegaf", "Abdullah Dull",
+        "Eka Syafitri", "Fazaa Irfann", "Muhammad Ilham", "Marini – Semarang", "Retno Budiyanto",
+        "Indoeting HarTina", "Nur Fadillah", "M. Taufan Setiawan", "Rully Sasmitha", "Nabila Rosiano",
+        "Jordi Balantukang", "Hendra Tri Yuana", "Muhammad Kahfi", "Emiana Pararak", "Ade Prihatin",
+        "Jhon Wesly Hasibuan", "Rusni", "Catur D. Prasetyo", "Carolus Mali Leki", "Jafrianto Wiza",
+        "Tegar Alifah Setiawan", "Benget T.R. Lingga", "Arja Kona", "Aristi Putri Swandhany", "Hardian Yogo Pratama",
+        "Oka Grandio", "Lani Diana", "Muhammad Naufal", "Alwin Rizky", "Vitra Huwae",
+        "Achmad Hasanudin", "Nazwa Dwi Syaharani", "Lukmano", "Fani Satria", "Nadya Andini",
+        "Gusti Rahmat Hidayat", "Muhammad Hendro", "Verdy Effendy Baad", "Dian Mona", "Muhammad Syafrul",
+        "Conny Baetty", "Yodra Muspirdi", "Fera Kusumawat", "Fathur Riziqin Febri", "Santi Manurung",
+        "Fadli Andar", "Ribka Chintia", "Sarjono Sarjono", "Syakila Mardiyah", "Muhammad Nafron",
+        "Risdianto 26", "Fredi Dwimanta", "Rika Ies", "Danang L R", "Noventinus Ginting",
+        "Zepi Aprilyana", "Osel Nur Tazkiya", "Fatima Sunnia", "Akbar Dwi Saputra", "Morino M",
+        "Sapril H", "Danil Akbar", "Tomi Riko Alfi", "Muhammad Alif Asr", "Rezky Illahi",
+        "Muhammad Rasidi", "Victor Pakpahan", "Ageng Kusuma", "Nurul Afifah", "Sonang Pardamean",
+        "Faisal Sultan Latief", "Darsono Yml", "Mario Radityo", "Muhammad Irwansyah", "Arie Nasution",
+        "Gita Cahyani", "Murwoto Hadi Prayitno", "Arief Riza Yanuardi", "Fakhry Ananda Aditya", "Agristy Tresna Hidayat",
+        "Athalia Putriwika Salsabila", "Slamet Siswanto", "Ahmad Fauzan Har", "Galih Reistaning Wij", "Teuku Muhammad J",
+        "rully rahim", "Kasdar Pramono", "Aulia Adisty Widya", "Muhammad Ridwan", "TA Sihotang",
+        "Irwan Aprianto", "muryanto ANG", "Erna Wati", "Anang Thok", "Alif Ramadhan",
+        "Wawan Jr", "Tatok Nikoriswanto", "Muhammad Ghiyats", "Mardin Bau bau", "Puarang Yusuf",
+        "FARIS FM", "edi a", "Alexander Dendy", "Muhamad Nasokha", "M.kamil Ramadhan",
+        "Suyono Palall", "Ifa Latifa", "Riswan. T", "Ridzky Ramdhani", "Sandi Agung Santo",
+        "Fathin Putri", "Ahmad Nasib", "Kiky Eldhani S", "reno kampai", "Muh.Rama Dhani",
+        "Ikhsan Abdul Dhohir", "Muhammad Laksam", "Sigit Pramono", "Dev Supriady", "Sammy Simanjuntak",
+        "iyep Gusnul Yaqin", "ahmad faruqi", "Riski Ardianto", "Afandi Djafar", "Edo Nuansa",
+        "Aryanto Ar", "Hairul Mukhlis", "Eky Putri Nirvana"
+    ];
+
+    // --- CONFIGURASI SMART LOGIC ---
+    // Nama-nama yang "Wajib" keluar, tapi "Ditahan" di awal
+    const vipList = [
+        "Arief Hidayat",
+        "Tola Bugis",
+        "Fadli Dzii Faza",
+        "Slamet Siswanto",
+        "Ahmad Fauzan Har",
+        "Galih Reistaning Wij",
+        "Eky Putri Nirvana",
+        "Alexander Dendy"
+    ];
+
+    // Variabel Global
+    let names = [...initialNames];
+    let winners = [];
+    const maxWinners = 20;
+    
+    // Elemen DOM
+    const rollingText = document.getElementById('rollingText');
+    const spinBtn = document.getElementById('spinBtn');
+    const displayBox = document.querySelector('.display-box');
+
+    // State
+    let isSpinning = false;
+    let spinInterval;
+
+    // --- AUDIO CONTEXT SETUP (Web Audio API) ---
+    // Menggunakan ini agar tidak perlu file eksternal
+    let audioCtx;
+
+    function initAudio() {
+        if (!audioCtx) {
+            audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        }
+    }
+
+    function playTickSound() {
+        if (!audioCtx) initAudio();
+        if (audioCtx.state === 'suspended') audioCtx.resume();
+
+        const osc = audioCtx.createOscillator();
+        const gainNode = audioCtx.createGain();
+
+        osc.type = 'square'; // Suara "tik" digital
+        osc.frequency.setValueAtTime(800, audioCtx.currentTime); 
+        osc.frequency.exponentialRampToValueAtTime(100, audioCtx.currentTime + 0.05);
+
+        gainNode.gain.setValueAtTime(0.05, audioCtx.currentTime); // Volume kecil
+        gainNode.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.05);
+
+        osc.connect(gainNode);
+        gainNode.connect(audioCtx.destination);
+
+        osc.start();
+        osc.stop(audioCtx.currentTime + 0.05);
+    }
+
+    function playWinSound() {
+        if (!audioCtx) initAudio();
+        if (audioCtx.state === 'suspended') audioCtx.resume();
+
+        const notes = [523.25, 659.25, 783.99, 1046.50];
+        const times = [0, 0.1, 0.2, 0.4]; 
+
+        notes.forEach((freq, i) => {
+            const osc = audioCtx.createOscillator();
+            const gainNode = audioCtx.createGain();
+
+            osc.type = 'triangle';
+            osc.frequency.setValueAtTime(freq, audioCtx.currentTime + times[i]);
+
+            gainNode.gain.setValueAtTime(0, audioCtx.currentTime + times[i]);
+            gainNode.gain.linearRampToValueAtTime(0.3, audioCtx.currentTime + times[i] + 0.05);
+            gainNode.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + times[i] + 0.8);
+
+            osc.connect(gainNode);
+            gainNode.connect(audioCtx.destination);
+
+            osc.start(audioCtx.currentTime + times[i]);
+            osc.stop(audioCtx.currentTime + times[i] + 1);
+        });
+    }
+
+    // Fungsi Acak Nama
+    function startSpin() {
+        if (isSpinning) return;
+        if (winners.length >= maxWinners) {
+            alert("Sudah mencapai 20 pemenang!");
+            return;
+        }
+
+        initAudio();
+
+        isSpinning = true;
+        spinBtn.disabled = true;
+        spinBtn.textContent = "MENGACAK...";
+        displayBox.classList.add('shaking');
+
+        const duration = 2000; 
+        const intervalSpeed = 80;
+
+        // Tampilkan nama secara acak (hanya visual)
+        spinInterval = setInterval(() => {
+            // Visual: Ambil sembarang nama dari list yang tersisa
+            const randomVisual = names[Math.floor(Math.random() * names.length)];
+            rollingText.textContent = randomVisual;
+            rollingText.style.color = getRandomColor();
+            playTickSound();
+        }, intervalSpeed);
+
+        setTimeout(() => {
+            stopSpin();
+        }, duration);
+    }
+
+    function stopSpin() {
+        clearInterval(spinInterval);
+        displayBox.classList.remove('shaking');
+        
+        // --- SMART LOGIC PEMILIHAN PEMENANG ---
+        let winnerName;
+        let winnerIndex;
+
+        // Hitung status saat ini
+        const slotsLeft = maxWinners - winners.length;
+        
+        // Cek berapa VIP yang masih tersisa di list 'names'
+        const remainingVipsInList = names.filter(n => vipList.includes(n));
+        const remainingVipCount = remainingVipsInList.length;
+
+        // Tentukan aturan main
+        // Aturan 1: Jika ini putaran awal (1-8), JANGAN pilih VIP.
+        const isEarlyGame = winners.length < 8;
+        
+        // Aturan 2: Jika sisa slot == sisa VIP, kita WAJIB pilih VIP sekarang agar semua kebagian.
+        const mustPickVipNow = remainingVipCount >= slotsLeft;
+
+        let candidatePool = [];
+
+        if (mustPickVipNow) {
+            // Mode Panik: Slot menipis, harus keluarkan VIP
+            candidatePool = remainingVipsInList;
+        } else if (isEarlyGame) {
+            // Mode Awal: Hindari VIP
+            candidatePool = names.filter(n => !vipList.includes(n));
+        } else {
+            // Mode Tengah (Round 9-20):
+            // Campur, tapi karena kita punya "mustPickVipNow" nanti, 
+            // kita bisa acak normal. Namun untuk sebaran yang bagus, kita biarkan random.
+            // Jika random terpilih VIP, sah-sah saja.
+            candidatePool = names;
+        }
+
+        // Safety Check: Jika karena suatu hal pool kosong (sangat jarang terjadi), pakai sisa names
+        if (candidatePool.length === 0) {
+            candidatePool = names;
+        }
+
+        // Pilih pemenang dari kandidat yang sudah disaring
+        const randomCandidate = candidatePool[Math.floor(Math.random() * candidatePool.length)];
+        
+        // Cari index asli di array 'names' untuk dihapus
+        winnerName = randomCandidate;
+        winnerIndex = names.indexOf(winnerName);
+
+        // --- END SMART LOGIC ---
+
+        // Tampilkan pemenang final
+        rollingText.textContent = winnerName;
+        rollingText.style.color = "var(--primary)";
+        playWinSound();
+
+        handleWin(winnerName, winnerIndex);
+    }
+
+    function handleWin(name, index) {
+        winners.push(name);
+        names.splice(index, 1); // Hapus dari daftar
+        
+        updateSidebar();
+        
+        setTimeout(() => {
+            showModal(name);
+            startConfetti();
+        }, 500);
+
+        isSpinning = false;
+        
+        if (winners.length >= maxWinners) {
+            spinBtn.textContent = "SELESAI (20/20)";
+            spinBtn.disabled = true;
+            spinBtn.style.backgroundColor = "#10b981";
+        } else {
+            spinBtn.disabled = false;
+            spinBtn.textContent = "ACAK NAMA";
+        }
+    }
+
+    function getRandomColor() {
+        const colors = ['#ef4444', '#f97316', '#f59e0b', '#84cc16', '#10b981', '#06b6d4', '#3b82f6', '#8b5cf6', '#d946ef'];
+        return colors[Math.floor(Math.random() * colors.length)];
+    }
+
+    function updateSidebar() {
+        const list = document.getElementById('winnersList');
+        const count = document.getElementById('winnerCount');
+        
+        if (winners.length === 1) {
+            list.innerHTML = '';
+        }
+
+        const lastWinner = winners[winners.length - 1];
+        const li = document.createElement('li');
+        li.className = 'winner-item';
+        
+        // Cek jika pemenang adalah VIP, beri tanda sedikit berbeda (opsional, saat ini sama saja)
+        li.innerHTML = `
+            <div class="winner-number">${winners.length}</div>
+            <div class="winner-name">${lastWinner}</div>
+        `;
+        
+        list.appendChild(li);
+        list.scrollTop = list.scrollHeight;
+        count.textContent = `${winners.length} / ${maxWinners}`;
+    }
+
+    function showModal(name) {
+        document.getElementById('winnerText').textContent = name;
+        document.getElementById('winnerModal').classList.add('active');
+    }
+
+    function closeModal() {
+        document.getElementById('winnerModal').classList.remove('active');
+        stopConfetti();
+        if (winners.length < maxWinners) {
+            rollingText.textContent = "SIAP?";
+            rollingText.style.color = "var(--text)";
+        } else {
+            rollingText.textContent = "SELESAI";
+        }
+    }
+
+    // Event Listeners
+    spinBtn.addEventListener('click', startSpin);
+    
+    // Confetti Logic
+    const confettiCanvas = document.getElementById('confettiCanvas');
+    const ctxConfetti = confettiCanvas.getContext('2d');
+    let confettiAnimation;
+    let particles = [];
+    const colors = ['#f87171', '#fb923c', '#fbbf24', '#a3e635', '#34d399', '#22d3ee', '#818cf8', '#c084fc', '#f472b6'];
+
+    function startConfetti() {
+        confettiCanvas.style.display = 'block';
+        confettiCanvas.width = window.innerWidth;
+        confettiCanvas.height = window.innerHeight;
+        particles = [];
+        for(let i=0; i<150; i++) {
+            particles.push({
+                x: Math.random() * confettiCanvas.width,
+                y: Math.random() * confettiCanvas.height - confettiCanvas.height,
+                color: colors[Math.floor(Math.random() * colors.length)],
+                size: Math.random() * 10 + 5,
+                speed: Math.random() * 5 + 2,
+                angle: Math.random() * 6.2
+            });
+        }
+        animateConfetti();
+    }
+
+    function animateConfetti() {
+        ctxConfetti.clearRect(0, 0, confettiCanvas.width, confettiCanvas.height);
+        particles.forEach((p, i) => {
+            p.y += p.speed;
+            p.x += Math.sin(p.angle) * 2;
+            ctxConfetti.fillStyle = p.color;
+            ctxConfetti.fillRect(p.x, p.y, p.size, p.size);
+            
+            if(p.y > confettiCanvas.height) {
+                particles[i].y = -10;
+            }
+        });
+        confettiAnimation = requestAnimationFrame(animateConfetti);
+    }
+
+    function stopConfetti() {
+        cancelAnimationFrame(confettiAnimation);
+        confettiCanvas.style.display = 'none';
+    }
+</script>
+
+</body>
+</html>
