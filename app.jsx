@@ -231,6 +231,46 @@ const formatDateIndo = (dateStr) => {
   try { return new Date(dateStr).toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' }); } catch (e) { return dateStr; }
 };
 
+const parseDateValue = (dateStr) => {
+  if (!dateStr || dateStr === 'TBD') return null;
+  const parsed = new Date(`${dateStr}T00:00:00`);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+};
+
+const toDateInputValue = (date) => {
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) return "";
+  return new Date(date.getTime() - (date.getTimezoneOffset() * 60000)).toISOString().slice(0, 10);
+};
+
+const addDays = (date, days) => {
+  const next = new Date(date);
+  next.setDate(next.getDate() + days);
+  return next;
+};
+
+const diffDays = (start, end) => Math.round((end - start) / (1000 * 60 * 60 * 24));
+
+const formatTimelineLabel = (date, zoomLevel) => {
+  if (zoomLevel === 'week') {
+    const weekEnd = addDays(date, 6);
+    return `${date.toLocaleDateString('id-ID', { day: 'numeric', month: 'short' })} - ${weekEnd.toLocaleDateString('id-ID', { day: 'numeric', month: 'short' })}`;
+  }
+  return date.toLocaleDateString('id-ID', { day: 'numeric' });
+};
+
+const getGanttStatusLabel = (status) => {
+  if (status === 'waiting_review') return 'Review';
+  if (status === 'revision') return 'Revise';
+  if (status === 'completed') return 'Completed';
+  return 'Ready';
+};
+
+const getDefaultSubtaskStartDate = (deadlineStr) => {
+  const deadlineDate = parseDateValue(deadlineStr);
+  if (!deadlineDate) return "";
+  return toDateInputValue(addDays(deadlineDate, -3));
+};
+
 const getLatestProjectUpdate = (task) => {
   if (!task.subtasks || task.subtasks.length === 0) return "-";
   const sorted = [...task.subtasks].sort((a, b) => {
@@ -395,6 +435,12 @@ export default function App() {
   const [currentCalendarDate, setCurrentCalendarDate] = useState(new Date());
   const [editingMainTaskId, setEditingMainTaskId] = useState(null);
   const [holidays, setHolidays] = useState([]);
+  const [ganttRangePreset, setGanttRangePreset] = useState('fit');
+  const [ganttRangeStart, setGanttRangeStart] = useState('');
+  const [ganttRangeEnd, setGanttRangeEnd] = useState('');
+  const [ganttZoomLevel, setGanttZoomLevel] = useState('day');
+  const [ganttShowCompleted, setGanttShowCompleted] = useState(true);
+  const [ganttTooltip, setGanttTooltip] = useState(null);
 
   // Fetch Public Holidays
   useEffect(() => {
@@ -450,6 +496,7 @@ export default function App() {
   const [subtaskFormTitle, setSubtaskFormTitle] = useState("");
   const [subtaskFormAssignee, setSubtaskFormAssignee] = useState("");
   const [subtaskFormDeadline, setSubtaskFormDeadline] = useState("");
+  const [subtaskFormStartDate, setSubtaskFormStartDate] = useState("");
   const [editingSubtaskId, setEditingSubtaskId] = useState(null);
   const [newUserForm, setNewUserForm] = useState({ name: "", email: "", password: "", role: "Assignee", department: "", photoURL: "" });
   const [editUserForm, setEditUserForm] = useState({ id: null, name: "", email: "", role: "", department: "", photoURL: "" });
@@ -717,25 +764,147 @@ export default function App() {
     };
   }, [editUserAvatarPreview]);
 
-  const ganttData = useMemo(() => {
-    if (!activeTask || !activeTask.subtasks || activeTask.subtasks.length === 0) return null;
-    const validSubtasks = activeTask.subtasks.filter(s => s.deadline);
-    const dates = validSubtasks.map(s => new Date(s.deadline));
-    if (activeTask.deadline) dates.push(new Date(activeTask.deadline));
-    if (dates.length === 0) return null;
-    const minDate = new Date(Math.min(...dates)); minDate.setDate(minDate.getDate() - 5);
-    const maxDate = new Date(Math.max(...dates)); maxDate.setDate(maxDate.getDate() + 2);
-    const dayList = [];
-    for (let d = new Date(minDate); d <= maxDate; d.setDate(d.getDate() + 1)) { dayList.push(new Date(d)); }
-    const totalDays = Math.ceil((maxDate - minDate) / (1000 * 60 * 60 * 24));
-    let mainTaskDeadlinePos = -1;
-    if (activeTask.deadline) {
-      const mainDeadlineDate = new Date(activeTask.deadline);
-      const diffMain = Math.ceil((mainDeadlineDate - minDate) / (1000 * 60 * 60 * 24));
-      mainTaskDeadlinePos = (diffMain / totalDays) * 100;
+  useEffect(() => {
+    if (!activeTask?.subtasks?.length) return;
+
+    const datedSubtasks = activeTask.subtasks
+      .filter((subtask) => subtask.deadline)
+      .map((subtask) => parseDateValue(subtask.deadline))
+      .filter(Boolean);
+
+    const mainDeadlineDate = parseDateValue(activeTask.deadline);
+    if (mainDeadlineDate) {
+      datedSubtasks.push(mainDeadlineDate);
     }
-    return { start: minDate, end: maxDate, days: dayList, subtasks: validSubtasks, totalDays, mainTaskDeadlinePos };
-  }, [activeTask]);
+    if (datedSubtasks.length === 0) return;
+
+    const earliest = new Date(Math.min(...datedSubtasks.map((date) => date.getTime())));
+    const latest = new Date(Math.max(...datedSubtasks.map((date) => date.getTime())));
+    const fitStart = addDays(earliest, -3);
+    const fitEnd = addDays(latest, 7);
+    const fitSpanDays = Math.max(1, diffDays(fitStart, fitEnd) + 1);
+
+    setGanttRangePreset('fit');
+    setGanttRangeStart(toDateInputValue(fitStart));
+    setGanttRangeEnd(toDateInputValue(fitEnd));
+    setGanttZoomLevel(fitSpanDays > 45 ? 'week' : 'day');
+    setGanttShowCompleted(true);
+    setGanttTooltip(null);
+  }, [activeTask?.id]);
+
+  const ganttData = useMemo(() => {
+    if (!activeTask?.subtasks?.length || !ganttRangeStart || !ganttRangeEnd) return null;
+
+    const start = parseDateValue(ganttRangeStart);
+    const end = parseDateValue(ganttRangeEnd);
+    if (!start || !end || end < start) return null;
+
+    const visibleSubtasks = activeTask.subtasks
+      .filter((subtask) => subtask.deadline)
+      .filter((subtask) => ganttShowCompleted || subtask.status !== 'completed')
+      .map((subtask) => {
+        const deadlineDate = parseDateValue(subtask.deadline);
+        return deadlineDate ? { ...subtask, deadlineDate } : null;
+      })
+      .filter(Boolean)
+      .sort((a, b) => {
+        const statusOrder = { revision: 1, waiting_review: 2, pending: 3, completed: 4 };
+        const orderDiff = (statusOrder[a.status] || 99) - (statusOrder[b.status] || 99);
+        if (orderDiff !== 0) return orderDiff;
+        return a.deadlineDate - b.deadlineDate;
+      });
+
+    const totalDays = Math.max(1, diffDays(start, end) + 1);
+    const zoomDays = ganttZoomLevel === 'week' ? 7 : 1;
+    const segments = [];
+    for (let cursor = new Date(start); cursor <= end; cursor = addDays(cursor, zoomDays)) {
+      segments.push(new Date(cursor));
+    }
+
+    const mainTaskDeadlineDate = parseDateValue(activeTask.deadline);
+    const mainTaskDeadlinePos = mainTaskDeadlineDate
+      ? Math.min(100, Math.max(0, ((diffDays(start, mainTaskDeadlineDate) + 0.5) / totalDays) * 100))
+      : -1;
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const todayPos = today >= start && today <= end
+      ? Math.min(100, Math.max(0, ((diffDays(start, today) + 0.5) / totalDays) * 100))
+      : -1;
+
+    return {
+      start,
+      end,
+      segments,
+      subtasks: visibleSubtasks,
+      totalDays,
+      mainTaskDeadlinePos,
+      todayPos,
+      zoomLevel: ganttZoomLevel,
+    };
+  }, [activeTask, ganttRangeStart, ganttRangeEnd, ganttShowCompleted, ganttZoomLevel]);
+
+  const applyGanttPreset = (preset) => {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    if (preset === '2w') {
+      const nextStart = addDays(today, -7);
+      const nextEnd = addDays(today, 7);
+      setGanttRangePreset(preset);
+      setGanttRangeStart(toDateInputValue(nextStart));
+      setGanttRangeEnd(toDateInputValue(nextEnd));
+      setGanttZoomLevel('day');
+      return;
+    }
+
+    if (preset === '1m') {
+      const nextStart = addDays(today, -7);
+      const nextEnd = addDays(today, 30);
+      setGanttRangePreset(preset);
+      setGanttRangeStart(toDateInputValue(nextStart));
+      setGanttRangeEnd(toDateInputValue(nextEnd));
+      setGanttZoomLevel('day');
+      return;
+    }
+
+    if (preset === '3m') {
+      const nextStart = addDays(today, -14);
+      const nextEnd = addDays(today, 90);
+      setGanttRangePreset(preset);
+      setGanttRangeStart(toDateInputValue(nextStart));
+      setGanttRangeEnd(toDateInputValue(nextEnd));
+      setGanttZoomLevel('week');
+      return;
+    }
+
+    const datedSubtasks = (activeTask?.subtasks || [])
+      .filter((subtask) => subtask.deadline)
+      .map((subtask) => parseDateValue(subtask.deadline))
+      .filter(Boolean);
+    const mainDeadlineDate = parseDateValue(activeTask?.deadline);
+    if (mainDeadlineDate) datedSubtasks.push(mainDeadlineDate);
+    if (datedSubtasks.length === 0) return;
+
+    const earliest = new Date(Math.min(...datedSubtasks.map((date) => date.getTime())));
+    const latest = new Date(Math.max(...datedSubtasks.map((date) => date.getTime())));
+    const nextStart = addDays(earliest, -3);
+    const nextEnd = addDays(latest, 7);
+    const spanDays = Math.max(1, diffDays(nextStart, nextEnd) + 1);
+
+    setGanttRangePreset('fit');
+    setGanttRangeStart(toDateInputValue(nextStart));
+    setGanttRangeEnd(toDateInputValue(nextEnd));
+    setGanttZoomLevel(spanDays > 45 ? 'week' : 'day');
+  };
+
+  const handleGanttTooltipMove = (event, subtask) => {
+    setGanttTooltip({
+      subtask,
+      x: event.clientX + 16,
+      y: event.clientY + 16,
+    });
+  };
 
   // Actions
   const recalculateProgress = (task, subtasksList) => {
@@ -869,11 +1038,31 @@ export default function App() {
     if (!subtaskFormTitle) return;
     const task = taskById.get(activeTask.id);
     if (!task) return;
+    const mainTaskDeadline = parseDateValue(task.deadline);
+    const subtaskDeadline = parseDateValue(subtaskFormDeadline);
+    const resolvedStartDate = subtaskFormStartDate || getDefaultSubtaskStartDate(subtaskFormDeadline);
+    const subtaskStartDate = parseDateValue(resolvedStartDate);
+
+    if (subtaskFormDeadline && mainTaskDeadline && subtaskDeadline && subtaskDeadline > mainTaskDeadline) {
+      alert("Deadline subtask tidak boleh melewati deadline main task.");
+      return;
+    }
+
+    if (resolvedStartDate && mainTaskDeadline && subtaskStartDate && subtaskStartDate > mainTaskDeadline) {
+      alert("Start date subtask tidak boleh melewati deadline main task.");
+      return;
+    }
+
+    if (subtaskStartDate && subtaskDeadline && subtaskStartDate > subtaskDeadline) {
+      alert("Start date subtask tidak boleh lebih besar dari deadline subtask.");
+      return;
+    }
+
     let updatedSubtasks;
     if (editingSubtaskId) {
-      updatedSubtasks = task.subtasks.map(st => st.id === editingSubtaskId ? { ...st, title: subtaskFormTitle, assignee: subtaskFormAssignee, deadline: subtaskFormDeadline || st.deadline, lastUpdated: getCurrentDateTime() } : st);
+      updatedSubtasks = task.subtasks.map(st => st.id === editingSubtaskId ? { ...st, title: subtaskFormTitle, assignee: subtaskFormAssignee, startDate: resolvedStartDate || st.startDate || "", deadline: subtaskFormDeadline || st.deadline, lastUpdated: getCurrentDateTime() } : st);
     } else {
-      updatedSubtasks = [...task.subtasks, { id: Date.now(), title: subtaskFormTitle, assignee: subtaskFormAssignee || "Unassigned", deadline: subtaskFormDeadline || "TBD", status: "pending", evidence: null, comments: [], lastUpdated: getCurrentDateTime() }];
+      updatedSubtasks = [...task.subtasks, { id: Date.now(), title: subtaskFormTitle, assignee: subtaskFormAssignee || "Unassigned", startDate: resolvedStartDate || "", deadline: subtaskFormDeadline || "TBD", status: "pending", evidence: null, comments: [], lastUpdated: getCurrentDateTime() }];
     }
     const updated = recalculateProgress(task, updatedSubtasks);
     await updateDoc(doc(db, 'tasks', activeTask.id), { subtasks: updated.subtasks, progress: updated.progress });
@@ -1175,8 +1364,8 @@ export default function App() {
   const handleTaskClick = (taskId) => { setSelectedTaskId(taskId); setShowMobileDetail(true); setViewMode('list'); };
   const handleOpenUserTaskDetail = (sub) => { setSelectedSubtask(sub); setEvidenceText(""); setShowUserTaskDetailModal(true); };
   const handleOpenUserDetail = (user) => { setSelectedUser(user); setShowUserDetailModal(true); };
-  const openAddSubtaskModal = () => { setSubtaskFormTitle(""); setSubtaskFormAssignee(""); setSubtaskFormDeadline(""); setEditingSubtaskId(null); setShowSubtaskModal(true); };
-  const openEditSubtaskModal = (sub) => { setSubtaskFormTitle(sub.title); setSubtaskFormAssignee(sub.assignee); setSubtaskFormDeadline(sub.deadline || ""); setEditingSubtaskId(sub.id); setShowSubtaskModal(true); };
+  const openAddSubtaskModal = () => { setSubtaskFormTitle(""); setSubtaskFormAssignee(""); setSubtaskFormDeadline(""); setSubtaskFormStartDate(""); setEditingSubtaskId(null); setShowSubtaskModal(true); };
+  const openEditSubtaskModal = (sub) => { setSubtaskFormTitle(sub.title); setSubtaskFormAssignee(sub.assignee); setSubtaskFormDeadline(sub.deadline || ""); setSubtaskFormStartDate(sub.startDate || getDefaultSubtaskStartDate(sub.deadline || "")); setEditingSubtaskId(sub.id); setShowSubtaskModal(true); };
   const openReviseModal = (task, sub) => { setSubtaskToRevise({ taskId: task.id, parentTitle: task.title, parentPic: task.pic, ...sub }); setReviseComment(""); setShowReviseModal(true); };
   const openEvidenceModal = (task, sub) => { setSelectedSubtask({ taskId: task.id, parentTitle: task.title, parentPic: task.pic, ...sub }); setEvidenceText(""); setEvidenceFiles([]); setEvidenceLink(""); setShowEvidenceModal(true); };
   const handleOpenEditUser = (user) => {
@@ -1614,56 +1803,218 @@ export default function App() {
                       )}
                     </div>
                   ) : (
-                    <div className="bg-white rounded-xl border border-slate-200 p-4 overflow-hidden">
+                    <div className="bg-white rounded-xl border border-slate-200 p-4 md:p-5 overflow-hidden relative">
                       {ganttData ? (
-                        <div className="overflow-x-auto relative">
-                          <div className="min-w-[600px] relative">
-                            <div className="flex border-b border-slate-200 pb-2 mb-2 relative z-10">
-                              <div className="w-48 flex-shrink-0 font-bold text-sm text-slate-700 pl-2">Subtask</div>
-                              <div className="flex-1 flex">
-                                {ganttData.days.map((day, i) => (
-                                  <div key={i} className="flex-1 text-[10px] text-center text-slate-400 border-l border-slate-100 min-w-[30px]">{day.getDate()}</div>
-                                ))}
-                              </div>
+                        <div className="space-y-4">
+                          <div className="space-y-3">
+                            <div className="flex flex-wrap items-center gap-2">
+                              {[
+                                { id: '2w', label: '2 Minggu' },
+                                { id: '1m', label: '1 Bulan' },
+                                { id: '3m', label: '3 Bulan' },
+                                { id: 'fit', label: 'Fit' },
+                              ].map((preset) => (
+                                <button
+                                  key={preset.id}
+                                  type="button"
+                                  onClick={() => applyGanttPreset(preset.id)}
+                                  className={`rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors ${ganttRangePreset === preset.id ? 'border-blue-200 bg-blue-50 text-blue-700' : 'border-slate-200 bg-white text-slate-500 hover:border-slate-300 hover:text-slate-700'}`}
+                                >
+                                  {preset.label}
+                                </button>
+                              ))}
+                              <select
+                                value={ganttZoomLevel}
+                                onChange={(e) => setGanttZoomLevel(e.target.value)}
+                                className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-600 outline-none transition focus:border-blue-300"
+                              >
+                                <option value="day">Hari</option>
+                                <option value="week">Minggu</option>
+                              </select>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const today = new Date();
+                                  today.setHours(0, 0, 0, 0);
+                                  const nextStart = ganttZoomLevel === 'week' ? addDays(today, -14) : addDays(today, -7);
+                                  const nextEnd = ganttZoomLevel === 'week' ? addDays(today, 35) : addDays(today, 7);
+                                  setGanttRangePreset('custom');
+                                  setGanttRangeStart(toDateInputValue(nextStart));
+                                  setGanttRangeEnd(toDateInputValue(nextEnd));
+                                }}
+                                className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-600 transition hover:border-slate-300 hover:text-slate-800"
+                              >
+                                Today
+                              </button>
+                              <label className="flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-600">
+                                <input
+                                  type="checkbox"
+                                  className="h-4 w-4 rounded border-slate-300 text-blue-600"
+                                  checked={ganttShowCompleted}
+                                  onChange={(e) => setGanttShowCompleted(e.target.checked)}
+                                />
+                                Show Completed
+                              </label>
                             </div>
-                            <div className="relative">
-                              {ganttData.mainTaskDeadlinePos >= 0 && (
-                                <div className="absolute top-[-0.5rem] bottom-0 left-48 right-0 pointer-events-none z-20">
-                                  <div className="absolute top-0 bottom-0 w-0.5 bg-red-500 shadow-sm opacity-70" style={{ left: `${ganttData.mainTaskDeadlinePos}%` }} title={`Project Due Date: ${activeTask.deadline}`}></div>
-                                </div>
-                              )}
-                              <div className="space-y-3 relative z-10">
-                                {ganttData.subtasks.map((sub) => {
-                                  const subDeadline = new Date(sub.deadline);
-                                  const diffStart = Math.ceil((subDeadline - ganttData.start) / (1000 * 60 * 60 * 24));
-                                  const totalDays = ganttData.totalDays;
-                                  const duration = 4;
-                                  const startPos = Math.max(0, diffStart - duration);
-                                  let barColor = 'bg-blue-400';
-                                  if (sub.status === 'completed') barColor = 'bg-green-500';
-                                  if (sub.status === 'revision') barColor = 'bg-red-500';
-                                  if (sub.status === 'waiting_review') barColor = 'bg-yellow-500';
-
-                                  return (
-                                    <div key={sub.id} className="flex items-center group hover:bg-slate-50 py-1 rounded">
-                                      <div className="w-48 flex-shrink-0 text-xs text-slate-700 truncate px-2 font-medium" title={sub.title}>{sub.title}</div>
-                                      <div className="flex-1 relative h-6 bg-slate-50 rounded-full border border-slate-100">
-                                        <div className="absolute inset-0 flex">{Array.from({ length: totalDays }).map((_, i) => (<div key={i} className="flex-1 border-l border-slate-100"></div>))}</div>
-                                        <div className={`absolute top-1 bottom-1 rounded-full shadow-sm ${barColor} transition-all cursor-pointer hover:opacity-80`} style={{ left: `${(startPos / totalDays) * 100}%`, width: `${(duration / totalDays) * 100}%` }} title={`Subtask Deadline: ${sub.deadline}`}></div>
-                                      </div>
-                                    </div>
-                                  );
-                                })}
-                              </div>
-                            </div>
-                            <div className="flex gap-4 mt-6 text-xs text-slate-500 justify-end relative z-10 bg-white/80 p-2">
-                              <div className="flex items-center gap-1"><div className="w-3 h-3 bg-green-500 rounded"></div> Completed</div>
-                              <div className="flex items-center gap-1"><div className="w-3 h-3 bg-yellow-500 rounded"></div> Review</div>
-                              <div className="flex items-center gap-1"><div className="w-3 h-3 bg-red-500 rounded"></div> Revise</div>
-                              <div className="flex items-center gap-1"><div className="w-3 h-3 bg-blue-400 rounded"></div> Pending</div>
-                              <div className="flex items-center gap-1"><div className="w-0.5 h-3 bg-red-500"></div> Project Due Date</div>
+                            <div className="flex flex-wrap items-center gap-2 text-xs font-medium text-slate-500">
+                              <label className="flex items-center gap-2 rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5">
+                                <span>From</span>
+                                <input
+                                  type="date"
+                                  value={ganttRangeStart}
+                                  onChange={(e) => {
+                                    setGanttRangePreset('custom');
+                                    setGanttRangeStart(e.target.value);
+                                  }}
+                                  className="bg-transparent text-slate-600 outline-none"
+                                />
+                              </label>
+                              <label className="flex items-center gap-2 rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5">
+                                <span>To</span>
+                                <input
+                                  type="date"
+                                  value={ganttRangeEnd}
+                                  onChange={(e) => {
+                                    setGanttRangePreset('custom');
+                                    setGanttRangeEnd(e.target.value);
+                                  }}
+                                  className="bg-transparent text-slate-600 outline-none"
+                                />
+                              </label>
                             </div>
                           </div>
+
+                          <div className="flex flex-wrap items-center gap-4 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-xs text-slate-500">
+                            <span>{ganttData.subtasks.length} subtask terlihat</span>
+                            <span>{ganttData.subtasks.filter((sub) => sub.status === 'completed').length} completed</span>
+                            <span>{ganttData.subtasks.filter((sub) => sub.status === 'waiting_review').length} review</span>
+                            <span>{ganttData.subtasks.filter((sub) => sub.status === 'revision').length} revise</span>
+                          </div>
+
+                          <div className="overflow-x-auto relative">
+                            <div className="min-w-[920px] relative">
+                              <div className="sticky top-0 z-20 bg-white">
+                                <div className="flex border-b border-slate-200">
+                                  <div className="w-56 flex-shrink-0 border-r border-slate-200 bg-white px-4 py-3 text-xs font-semibold uppercase tracking-[0.08em] text-slate-500">
+                                    Subtask
+                                  </div>
+                                  <div className="flex-1">
+                                    <div className="grid" style={{ gridTemplateColumns: `repeat(${ganttData.segments.length}, minmax(${ganttData.zoomLevel === 'week' ? '88px' : '42px'}, 1fr))` }}>
+                                      {ganttData.segments.map((segment, index) => {
+                                        const monthLabel = segment.toLocaleDateString('id-ID', { month: 'short', year: 'numeric' });
+                                        const prevMonthLabel = index > 0 ? ganttData.segments[index - 1].toLocaleDateString('id-ID', { month: 'short', year: 'numeric' }) : null;
+                                        return (
+                                          <div key={`month-${segment.toISOString()}`} className={`border-l border-slate-100 px-2 py-2 text-[10px] font-semibold uppercase tracking-[0.08em] text-slate-400 ${monthLabel !== prevMonthLabel ? 'bg-slate-50/70' : 'bg-white'}`}>
+                                            {monthLabel !== prevMonthLabel ? monthLabel : ''}
+                                          </div>
+                                        );
+                                      })}
+                                    </div>
+                                    <div className="grid border-t border-slate-100" style={{ gridTemplateColumns: `repeat(${ganttData.segments.length}, minmax(${ganttData.zoomLevel === 'week' ? '88px' : '42px'}, 1fr))` }}>
+                                      {ganttData.segments.map((segment) => {
+                                        const isWeekend = ganttData.zoomLevel === 'day' && [0, 6].includes(segment.getDay());
+                                        return (
+                                          <div key={segment.toISOString()} className={`border-l border-slate-100 px-2 py-2 text-center text-[10px] font-medium text-slate-500 ${isWeekend ? 'bg-red-50/40' : 'bg-white'}`}>
+                                            {formatTimelineLabel(segment, ganttData.zoomLevel)}
+                                          </div>
+                                        );
+                                      })}
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+
+                              <div className="relative">
+                                {ganttData.todayPos >= 0 && (
+                                  <div className="pointer-events-none absolute bottom-0 top-0 left-56 right-0 z-10">
+                                    <div className="absolute bottom-0 top-0 w-px bg-blue-400/80" style={{ left: `${ganttData.todayPos}%` }} />
+                                  </div>
+                                )}
+                                {ganttData.mainTaskDeadlinePos >= 0 && (
+                                  <div className="pointer-events-none absolute bottom-0 top-0 left-56 right-0 z-10">
+                                    <div className="absolute bottom-0 top-0 w-px bg-red-400/80" style={{ left: `${ganttData.mainTaskDeadlinePos}%` }} />
+                                  </div>
+                                )}
+
+                                <div className="divide-y divide-slate-100 border-b border-slate-200">
+                                  {ganttData.subtasks.map((sub) => {
+                                    const subStartDate = parseDateValue(sub.startDate) || addDays(sub.deadlineDate, -3);
+                                    const clampedStartDate = subStartDate < ganttData.start ? ganttData.start : subStartDate;
+                                    const clampedEndDate = sub.deadlineDate > ganttData.end ? ganttData.end : sub.deadlineDate;
+                                    const visibleDurationDays = Math.max(1, diffDays(clampedStartDate, clampedEndDate) + 1);
+                                    const startPercent = (diffDays(ganttData.start, clampedStartDate) / ganttData.totalDays) * 100;
+                                    const widthPercent = Math.max((visibleDurationDays / ganttData.totalDays) * 100, ganttData.zoomLevel === 'week' ? 7 : 3.2);
+                                    let barColor = 'bg-blue-500';
+                                    if (sub.status === 'completed') barColor = 'bg-green-500';
+                                    if (sub.status === 'revision') barColor = 'bg-red-500';
+                                    if (sub.status === 'waiting_review') barColor = 'bg-amber-500';
+
+                                    return (
+                                      <div key={sub.id} className="flex min-h-[54px] bg-white transition-colors hover:bg-slate-50/70">
+                                        <div className="w-56 flex-shrink-0 border-r border-slate-200 px-4 py-3">
+                                          <p
+                                            className="truncate text-sm font-medium text-slate-700"
+                                            title={sub.title}
+                                            onMouseEnter={(event) => handleGanttTooltipMove(event, sub)}
+                                            onMouseMove={(event) => handleGanttTooltipMove(event, sub)}
+                                            onMouseLeave={() => setGanttTooltip(null)}
+                                          >
+                                            {sub.title}
+                                          </p>
+                                        </div>
+                                        <div className="relative flex-1">
+                                          <div className="absolute inset-0 grid" style={{ gridTemplateColumns: `repeat(${ganttData.segments.length}, minmax(${ganttData.zoomLevel === 'week' ? '88px' : '42px'}, 1fr))` }}>
+                                            {ganttData.segments.map((segment) => {
+                                              const isWeekend = ganttData.zoomLevel === 'day' && [0, 6].includes(segment.getDay());
+                                              return <div key={`grid-${sub.id}-${segment.toISOString()}`} className={`border-l border-slate-100 ${isWeekend ? 'bg-red-50/30' : 'bg-transparent'}`} />;
+                                            })}
+                                          </div>
+                                          <div className="absolute inset-y-0 left-0 right-0">
+                                            <button
+                                              type="button"
+                                              className={`absolute top-1/2 h-5 -translate-y-1/2 rounded-full ${barColor} shadow-sm transition hover:opacity-90`}
+                                              style={{ left: `${startPercent}%`, width: `${widthPercent}%` }}
+                                              onClick={() => handleOpenUserTaskDetail({ ...sub, parentId: activeTask.id, parentTitle: activeTask.title })}
+                                              onMouseEnter={(event) => handleGanttTooltipMove(event, sub)}
+                                              onMouseMove={(event) => handleGanttTooltipMove(event, sub)}
+                                              onMouseLeave={() => setGanttTooltip(null)}
+                                              aria-label={sub.title}
+                                            />
+                                          </div>
+                                        </div>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+
+                              <div className="mt-4 flex flex-wrap items-center justify-end gap-4 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-xs text-slate-500">
+                                <span className="flex items-center gap-2"><span className="h-3 w-3 rounded-full bg-green-500" /> Completed</span>
+                                <span className="flex items-center gap-2"><span className="h-3 w-3 rounded-full bg-amber-500" /> Review</span>
+                                <span className="flex items-center gap-2"><span className="h-3 w-3 rounded-full bg-red-500" /> Revise</span>
+                                <span className="flex items-center gap-2"><span className="h-3 w-3 rounded-full bg-blue-500" /> Ready</span>
+                                <span className="flex items-center gap-2"><span className="h-4 w-px bg-blue-400" /> Today</span>
+                                <span className="flex items-center gap-2"><span className="h-4 w-px bg-red-400" /> Main deadline</span>
+                              </div>
+                            </div>
+                          </div>
+
+                          {ganttTooltip && (
+                            <div
+                              className="pointer-events-none fixed z-50 w-64 rounded-xl border border-slate-200 bg-white p-3 shadow-xl"
+                              style={{
+                                left: `${Math.min(ganttTooltip.x, window.innerWidth - 280)}px`,
+                                top: `${Math.min(ganttTooltip.y, window.innerHeight - 140)}px`,
+                              }}
+                            >
+                              <p className="text-sm font-semibold text-slate-900">{ganttTooltip.subtask.title}</p>
+                              <div className="mt-2 space-y-1.5 text-xs text-slate-500">
+                                <p><span className="font-semibold text-slate-700">Assignee:</span> {ganttTooltip.subtask.assignee}</p>
+                                <p><span className="font-semibold text-slate-700">Status:</span> {getGanttStatusLabel(ganttTooltip.subtask.status)}</p>
+                                <p><span className="font-semibold text-slate-700">Deadline:</span> {formatDateIndo(ganttTooltip.subtask.deadline)}</p>
+                              </div>
+                            </div>
+                          )}
                         </div>
                       ) : (
                         <div className="text-center py-8 text-slate-400 text-sm"><BarChart2 className="w-8 h-8 mx-auto mb-2 opacity-20" />Tidak ada data deadline untuk ditampilkan di Gantt Chart.</div>
@@ -2280,7 +2631,15 @@ export default function App() {
               <div className="p-6 space-y-4">
                 <input type="text" className="w-full border p-2 rounded-lg text-sm" value={subtaskFormTitle} onChange={(e) => setSubtaskFormTitle(e.target.value)} placeholder="Nama Subtask" />
                 <div><label className="block text-xs font-bold text-slate-500 mb-1 uppercase">Assignee (Member)</label><select className="w-full border p-2 rounded-lg text-sm bg-white" value={subtaskFormAssignee} onChange={(e) => setSubtaskFormAssignee(e.target.value)}><option value="" disabled>-- Pilih Assignee --</option>{activeUsers.map(user => (<option key={user.id} value={user.name}>{user.name} ({user.role})</option>))}</select></div>
-                <input type="date" className="w-full border p-2 rounded-lg text-sm" value={subtaskFormDeadline} onChange={(e) => setSubtaskFormDeadline(e.target.value)} />
+                <div>
+                  <label className="block text-xs font-bold text-slate-500 mb-1 uppercase">Start Date</label>
+                  <input type="date" className="w-full border p-2 rounded-lg text-sm" value={subtaskFormStartDate} max={activeTask?.deadline || undefined} onChange={(e) => setSubtaskFormStartDate(e.target.value)} />
+                  <p className="mt-1 text-[11px] text-slate-400">Kosongkan untuk default H-3 dari deadline subtask. Tidak boleh melewati deadline main task.</p>
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-slate-500 mb-1 uppercase">Deadline</label>
+                  <input type="date" className="w-full border p-2 rounded-lg text-sm" value={subtaskFormDeadline} max={activeTask?.deadline || undefined} onChange={(e) => { setSubtaskFormDeadline(e.target.value); if (!subtaskFormStartDate) { setSubtaskFormStartDate(getDefaultSubtaskStartDate(e.target.value)); } }} />
+                </div>
               </div>
               <div className="bg-slate-50 p-4 flex justify-end gap-2 border-t"><button onClick={() => setShowSubtaskModal(false)} className="px-4 py-2 text-sm text-slate-600">Batal</button><button onClick={saveSubtask} className="px-4 py-2 bg-blue-600 text-white text-sm rounded-lg">Simpan</button></div>
             </div>
