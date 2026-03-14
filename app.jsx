@@ -671,6 +671,26 @@ export default function App() {
     return new Map(entries);
   }, [users]);
 
+  useEffect(() => {
+    if (!currentUser?.id || users.length === 0) return;
+
+    const latestCurrentUser = users.find((user) => user.id === currentUser.id);
+    if (!latestCurrentUser) return;
+
+    const hasChanged =
+      latestCurrentUser.name !== currentUser.name ||
+      latestCurrentUser.email !== currentUser.email ||
+      latestCurrentUser.role !== currentUser.role ||
+      latestCurrentUser.department !== currentUser.department ||
+      latestCurrentUser.status !== currentUser.status ||
+      latestCurrentUser.photoURL !== currentUser.photoURL;
+
+    if (hasChanged) {
+      setCurrentUser(latestCurrentUser);
+      setUserRole(latestCurrentUser.role);
+    }
+  }, [users, currentUser]);
+
   const newUserAvatarPreview = useMemo(
     () => (newUserAvatarFile ? URL.createObjectURL(newUserAvatarFile) : ""),
     [newUserAvatarFile]
