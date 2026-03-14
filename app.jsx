@@ -1,8 +1,9 @@
-import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
-import { db, auth, storage } from './firebase.js';
+import React, { useState, useEffect, useMemo, useRef, lazy, Suspense } from 'react';
+import { initializeApp, deleteApp } from 'firebase/app';
+import app, { db, auth, storage } from './firebase.js';
 import { collection, doc, addDoc, updateDoc, deleteDoc, onSnapshot, setDoc, getDoc } from 'firebase/firestore';
 import { ref as storageRef, uploadBytes, getDownloadURL } from 'firebase/storage';
-import { signInWithEmailAndPassword, signOut, onAuthStateChanged, createUserWithEmailAndPassword } from 'firebase/auth';
+import { signInWithEmailAndPassword, signOut, onAuthStateChanged, createUserWithEmailAndPassword, getAuth } from 'firebase/auth';
 import {
   CheckCircle, Circle, Plus, Users, FileText, Upload, Briefcase, AlertCircle,
   Image as ImageIcon, Calendar, CalendarDays, Layout, Trash2, Edit2, X, Clock, AlertTriangle,
@@ -96,15 +97,18 @@ const DEFAULT_TASKS = [
 ];
 
 const DEFAULT_USERS = [
-  { id: 1, name: "Budi Santoso", email: "budi.s@pertamina.com", password: "password123", role: "PIC", department: "Strategic Planning", status: "Active" },
-  { id: 2, name: "Siti Aminah", email: "siti.a@pertamina.com", password: "password123", role: "Assignee", department: "Finance", status: "Active" },
-  { id: 3, name: "Rudi Hartono", email: "rudi.h@pertamina.com", password: "password123", role: "Assignee", department: "IT Infrastructure", status: "Active" },
-  { id: 4, name: "Andi Wijaya", email: "andi.w@pertamina.com", password: "password123", role: "PIC", department: "IT Support", status: "Active" },
-  { id: 5, name: "Sarah Larasati", email: "sarah.l@pertamina.com", password: "password123", role: "PIC", department: "Digital Product", status: "Active" },
-  { id: 6, name: "Dimas Anggara", email: "dimas.a@pertamina.com", password: "password123", role: "Assignee", department: "Software Engineering", status: "Active" },
-  { id: 7, name: "Jessica Tan", email: "jessica.t@pertamina.com", password: "password123", role: "PIC", department: "Human Resources", status: "Active" },
-  { id: 8, name: "Reza Mahendra", email: "reza.m@pertamina.com", password: "password123", role: "Assignee", department: "Legal", status: "Active" },
+  { id: 1, name: "Budi Santoso", email: "budi.s@pertamina.com", role: "PIC", department: "Strategic Planning", status: "Active" },
+  { id: 2, name: "Siti Aminah", email: "siti.a@pertamina.com", role: "Assignee", department: "Finance", status: "Active" },
+  { id: 3, name: "Rudi Hartono", email: "rudi.h@pertamina.com", role: "Assignee", department: "IT Infrastructure", status: "Active" },
+  { id: 4, name: "Andi Wijaya", email: "andi.w@pertamina.com", role: "PIC", department: "IT Support", status: "Active" },
+  { id: 5, name: "Sarah Larasati", email: "sarah.l@pertamina.com", role: "PIC", department: "Digital Product", status: "Active" },
+  { id: 6, name: "Dimas Anggara", email: "dimas.a@pertamina.com", role: "Assignee", department: "Software Engineering", status: "Active" },
+  { id: 7, name: "Jessica Tan", email: "jessica.t@pertamina.com", role: "PIC", department: "Human Resources", status: "Active" },
+  { id: 8, name: "Reza Mahendra", email: "reza.m@pertamina.com", role: "Assignee", department: "Legal", status: "Active" },
 ];
+
+const AVATAR_MAX_BYTES = 2 * 1024 * 1024;
+const ALLOWED_AVATAR_TYPES = ['image/jpeg', 'image/png'];
 
 const DEFAULT_KPIS = [
   { id: 1, title: "Revenue Growth", group: "FINANCE" },
@@ -127,6 +131,20 @@ const DEFAULT_EVENTS = [
 ];
 
 const KPI_GROUPS = ['FINANCE', 'CUSTOMER FOCUS', 'INTERNAL PROCESS', 'LEARNING & GROWTH'];
+const MAX_EVIDENCE_FILE_SIZE = 10 * 1024 * 1024;
+const ALLOWED_EVIDENCE_EXTENSIONS = new Set(['pdf', 'doc', 'docx', 'xls', 'xlsx', 'csv', 'ppt', 'pptx', 'jpg', 'jpeg', 'png']);
+const ALLOWED_EVIDENCE_MIME_TYPES = new Set([
+  'application/pdf',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.ms-excel',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'text/csv',
+  'application/vnd.ms-powerpoint',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  'image/jpeg',
+  'image/png',
+]);
 
 const DEFAULT_TEMPLATES = [
   {
@@ -153,15 +171,26 @@ const DEFAULT_TEMPLATES = [
 ];
 
 // --- HELPER COMPONENTS ---
-const UserAvatar = ({ name, className = "w-6 h-6", size = 128 }) => {
+const UserAvatar = ({ name, photoURL = "", className = "w-6 h-6", size = 128 }) => {
   const safeName = typeof name === 'string' ? name : 'User';
+  const [hasPhotoError, setHasPhotoError] = React.useState(false);
   const seed = encodeURIComponent(safeName);
+  const src = !hasPhotoError && photoURL
+    ? photoURL
+    : `https://ui-avatars.com/api/?name=${seed}&background=random&color=fff&size=${size}&rounded=true&bold=true`;
+
+  React.useEffect(() => {
+    setHasPhotoError(false);
+  }, [photoURL, safeName]);
+
   return (
     <img
-      src={`https://ui-avatars.com/api/?name=${seed}&background=random&color=fff&size=${size}&rounded=true&bold=true`}
+      src={src}
       alt={safeName}
       className={`rounded-full object-cover border border-white shadow-sm flex-shrink-0 ${className}`}
       title={safeName}
+      onError={() => setHasPhotoError(true)}
+      referrerPolicy="no-referrer"
     />
   );
 };
@@ -224,6 +253,34 @@ const getFileMeta = (filename) => {
   }
 };
 
+const UserTaskPage = lazy(() => import('./pages/UserTaskPage.jsx'));
+const FilePage = lazy(() => import('./pages/FilePage.jsx'));
+const DashboardPage = lazy(() => import('./pages/DashboardPage.jsx'));
+const ManageUserPage = lazy(() => import('./pages/ManageUserPage.jsx'));
+const KpiPage = lazy(() => import('./pages/KpiPage.jsx'));
+const CoePage = lazy(() => import('./pages/CoePage.jsx'));
+const TemplateTaskPage = lazy(() => import('./pages/TemplateTaskPage.jsx'));
+
+const validateEvidenceFiles = (files) => {
+  const invalidFile = files.find((file) => {
+    const extension = file.name.split('.').pop()?.toLowerCase();
+    const extensionAllowed = extension && ALLOWED_EVIDENCE_EXTENSIONS.has(extension);
+    const mimeAllowed = !file.type || ALLOWED_EVIDENCE_MIME_TYPES.has(file.type);
+    return !extensionAllowed || !mimeAllowed || file.size > MAX_EVIDENCE_FILE_SIZE;
+  });
+
+  if (!invalidFile) return { ok: true, files };
+
+  if (invalidFile.size > MAX_EVIDENCE_FILE_SIZE) {
+    return { ok: false, message: `File ${invalidFile.name} melebihi batas 10 MB.` };
+  }
+
+  return {
+    ok: false,
+    message: `File ${invalidFile.name} tidak diizinkan. Hanya PDF, Office, CSV, JPG, dan PNG yang diperbolehkan.`,
+  };
+};
+
 const getProjectStatus = (task) => {
   if (!task.subtasks || task.subtasks.length === 0) return { label: 'SUBMITTED', color: 'bg-blue-50 border-blue-200', text: 'text-blue-700', badge: 'bg-blue-100 text-blue-700', ring: 'ring-blue-500' };
   const hasRevision = task.subtasks.some(s => s.status === 'revision');
@@ -277,33 +334,55 @@ export default function App() {
   const [taskTemplates, setTaskTemplates] = useState([]);
   const [dataLoaded, setDataLoaded] = useState(false);
 
-  // Firestore Realtime Listeners
-  useEffect(() => {
-    const unsubs = [];
-    unsubs.push(onSnapshot(collection(db, 'tasks'), (snap) => {
-      setTasks(snap.docs.map(d => ({ ...d.data(), id: d.id })));
-    }));
-    unsubs.push(onSnapshot(collection(db, 'users'), (snap) => {
-      setUsers(snap.docs.map(d => ({ ...d.data(), id: d.id })));
-    }));
-    unsubs.push(onSnapshot(collection(db, 'kpis'), (snap) => {
-      setKpis(snap.docs.map(d => ({ ...d.data(), id: d.id })));
-    }));
-    unsubs.push(onSnapshot(collection(db, 'events'), (snap) => {
-      setEvents(snap.docs.map(d => ({ ...d.data(), id: d.id })));
-    }));
-    unsubs.push(onSnapshot(collection(db, 'templates'), (snap) => {
-      setTaskTemplates(snap.docs.map(d => ({ ...d.data(), id: d.id })));
-    }));
-    // Mark data as loaded after first batch
-    const timer = setTimeout(() => setDataLoaded(true), 1500);
-    return () => { unsubs.forEach(u => u()); clearTimeout(timer); };
-  }, []);
-
   // Auth State
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [currentUser, setCurrentUser] = useState(null);
   const [userRole, setUserRole] = useState('');
+
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+      if (!firebaseUser) {
+        setIsLoggedIn(false);
+        setCurrentUser(null);
+        setUserRole('');
+        setTasks([]);
+        setUsers([]);
+        setKpis([]);
+        setEvents([]);
+        setTaskTemplates([]);
+        setDataLoaded(true);
+        return;
+      }
+
+      setDataLoaded(false);
+
+      try {
+        const userDoc = await getDoc(doc(db, 'users', firebaseUser.uid));
+        if (!userDoc.exists()) {
+          await signOut(auth);
+          return;
+        }
+
+        const userData = { id: userDoc.id, ...userDoc.data() };
+        if (userData.status === 'Inactive') {
+          await signOut(auth);
+          return;
+        }
+
+        setCurrentUser(userData);
+        setUserRole(userData.role);
+        setIsLoggedIn(true);
+        setActivePage('jobtask');
+      } catch (error) {
+        console.error('Failed to restore auth session:', error);
+        setIsLoggedIn(false);
+        setCurrentUser(null);
+        setUserRole('');
+      }
+    });
+
+    return () => unsubscribe();
+  }, []);
 
   // UI States
   const [selectedTaskId, setSelectedTaskId] = useState(tasks[0]?.id || null);
@@ -372,8 +451,11 @@ export default function App() {
   const [subtaskFormAssignee, setSubtaskFormAssignee] = useState("");
   const [subtaskFormDeadline, setSubtaskFormDeadline] = useState("");
   const [editingSubtaskId, setEditingSubtaskId] = useState(null);
-  const [newUserForm, setNewUserForm] = useState({ name: "", email: "", password: "", role: "Assignee", department: "" });
-  const [editUserForm, setEditUserForm] = useState({ id: null, name: "", email: "", password: "", role: "", department: "" });
+  const [newUserForm, setNewUserForm] = useState({ name: "", email: "", password: "", role: "Assignee", department: "", photoURL: "" });
+  const [editUserForm, setEditUserForm] = useState({ id: null, name: "", email: "", role: "", department: "", photoURL: "" });
+  const [newUserAvatarFile, setNewUserAvatarFile] = useState(null);
+  const [editUserAvatarFile, setEditUserAvatarFile] = useState(null);
+  const [isSavingUser, setIsSavingUser] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [editingKPI, setEditingKPI] = useState(null);
   const [kpiForm, setKpiForm] = useState({ title: "", group: "FINANCE" });
@@ -381,7 +463,7 @@ export default function App() {
     'FINANCE': true, 'CUSTOMER FOCUS': true, 'INTERNAL PROCESS': true, 'LEARNING & GROWTH': true
   });
   const [editingEvent, setEditingEvent] = useState(null);
-  const [eventForm, setEventForm] = useState({ title: "", startDate: "", endDate: "", location: "", participants: [] });
+  const [eventForm, setEventForm] = useState({ title: "", startDate: "", endDate: "", location: "", participants: [], linkedTaskId: "" });
   const [editingTemplate, setEditingTemplate] = useState(null);
   const [templateForm, setTemplateForm] = useState({ name: "", subtasks: [{ title: "", assignee: "", deadline: "" }] });
   const [selectedTemplateId, setSelectedTemplateId] = useState("");
@@ -393,7 +475,134 @@ export default function App() {
   // Collapsible State for Subtasks
   const [expandedSubtasks, setExpandedSubtasks] = useState({});
 
-  const activeTask = tasks.find(t => t.id === selectedTaskId);
+  const dataNeeds = useMemo(() => ({
+    tasks: ['jobtask', 'user-task', 'file', 'dashboard'].includes(activePage) || showNewTaskModal || showSubtaskModal || showReviseModal || showEvidenceModal || showUserTaskDetailModal || showEventModal,
+    users: ['jobtask', 'dashboard', 'manage-user'].includes(activePage) || showAddUserModal || showEditUserModal || showTemplateModal || showEventModal || showSubtaskModal,
+    kpis: activePage === 'kpi' || showKPIModal,
+    events: activePage === 'coe' || activePage === 'jobtask' || showEventModal || showEventDetailModal,
+    templates: activePage === 'template-task' || showTemplateModal || showNewTaskModal,
+  }), [
+    activePage,
+    showAddUserModal,
+    showEditUserModal,
+    showEvidenceModal,
+    showEventDetailModal,
+    showEventModal,
+    showKPIModal,
+    showNewTaskModal,
+    showReviseModal,
+    showSubtaskModal,
+    showTemplateModal,
+    showUserTaskDetailModal,
+  ]);
+
+  const taskById = useMemo(() => new Map(tasks.map((task) => [task.id, task])), [tasks]);
+  const activeUsers = useMemo(() => users.filter((user) => user.status === 'Active'), [users]);
+  const eventsSorted = useMemo(
+    () => [...events].sort((a, b) => new Date(a?.startDate || 0) - new Date(b?.startDate || 0)),
+    [events]
+  );
+  const eventByLinkedTaskId = useMemo(() => {
+    const linkedEvents = new Map();
+    events.forEach((event) => {
+      if (event.linkedTaskId && !linkedEvents.has(event.linkedTaskId)) {
+        linkedEvents.set(event.linkedTaskId, event);
+      }
+    });
+    return linkedEvents;
+  }, [events]);
+  const eventByTitle = useMemo(() => {
+    const titledEvents = new Map();
+    events.forEach((event) => {
+      if (event.title && !titledEvents.has(event.title)) {
+        titledEvents.set(event.title, event);
+      }
+    });
+    return titledEvents;
+  }, [events]);
+  const holidaysByDate = useMemo(() => new Map(holidays.map((holiday) => [holiday.date, holiday])), [holidays]);
+  const kpisByGroup = useMemo(() => {
+    const grouped = new Map(KPI_GROUPS.map((group) => [group, []]));
+    kpis.forEach((kpi) => {
+      if (!grouped.has(kpi.group)) grouped.set(kpi.group, []);
+      grouped.get(kpi.group).push(kpi);
+    });
+    return grouped;
+  }, [kpis]);
+  const calendarEventsByDate = useMemo(() => {
+    const map = new Map();
+    events.forEach((event) => {
+      if (!event?.startDate) return;
+      const start = new Date(event.startDate);
+      const end = new Date(event.endDate || event.startDate);
+      start.setHours(0, 0, 0, 0);
+      end.setHours(0, 0, 0, 0);
+      for (let cursor = new Date(start); cursor <= end; cursor.setDate(cursor.getDate() + 1)) {
+        const key = cursor.toISOString().split('T')[0];
+        if (!map.has(key)) map.set(key, []);
+        map.get(key).push(event);
+      }
+    });
+    return map;
+  }, [events]);
+
+  const activeTask = selectedTaskId ? taskById.get(selectedTaskId) || null : null;
+
+  // Firestore Realtime Listeners
+  useEffect(() => {
+    if (!isLoggedIn) return undefined;
+
+    setDataLoaded(false);
+    const unsubs = [];
+    if (dataNeeds.tasks) {
+      unsubs.push(onSnapshot(collection(db, 'tasks'), (snap) => {
+        setTasks(snap.docs.map(d => ({ ...d.data(), id: d.id })));
+      }));
+    } else {
+      setTasks([]);
+    }
+    if (dataNeeds.users) {
+      unsubs.push(onSnapshot(collection(db, 'users'), (snap) => {
+        setUsers(snap.docs.map(d => ({ ...d.data(), id: d.id })));
+      }));
+    } else {
+      setUsers([]);
+    }
+    if (dataNeeds.kpis) {
+      unsubs.push(onSnapshot(collection(db, 'kpis'), (snap) => {
+        setKpis(snap.docs.map(d => ({ ...d.data(), id: d.id })));
+      }));
+    } else {
+      setKpis([]);
+    }
+    if (dataNeeds.events) {
+      unsubs.push(onSnapshot(collection(db, 'events'), (snap) => {
+        setEvents(snap.docs.map(d => ({ ...d.data(), id: d.id })));
+      }));
+    } else {
+      setEvents([]);
+    }
+    if (dataNeeds.templates) {
+      unsubs.push(onSnapshot(collection(db, 'templates'), (snap) => {
+        setTaskTemplates(snap.docs.map(d => ({ ...d.data(), id: d.id })));
+      }));
+    } else {
+      setTaskTemplates([]);
+    }
+    const timer = setTimeout(() => setDataLoaded(true), 300);
+    return () => { unsubs.forEach(u => u()); clearTimeout(timer); };
+  }, [dataNeeds, isLoggedIn]);
+
+  useEffect(() => {
+    if (!tasks.length) {
+      setSelectedTaskId(null);
+      return;
+    }
+
+    if (!selectedTaskId || !taskById.has(selectedTaskId)) {
+      setSelectedTaskId(tasks[0].id);
+    }
+  }, [selectedTaskId, taskById, tasks]);
 
   // --- LOGIC ---
 
@@ -406,41 +615,14 @@ export default function App() {
 
   const handleLogin = async (email, password, setErrorCallback) => {
     try {
-      const userCredential = await signInWithEmailAndPassword(auth, email, password);
-      const userDoc = await getDoc(doc(db, 'users', userCredential.user.uid));
-      if (userDoc.exists()) {
-        const userData = { id: userDoc.id, ...userDoc.data() };
-        if (userData.status === 'Inactive') {
-          setErrorCallback('Akun Anda tidak aktif. Silakan hubungi administrator.');
-          await signOut(auth);
-          return;
-        }
-        setCurrentUser(userData);
-        setUserRole(userData.role);
-        setIsLoggedIn(true);
-        setActivePage('jobtask');
-      } else {
-        // Fallback: find user profile by email in users collection
-        const matchedUser = users.find(u => u.email === email);
-        if (matchedUser) {
-          if (matchedUser.status === 'Inactive') {
-            setErrorCallback('Akun Anda tidak aktif. Silakan hubungi administrator.');
-            await signOut(auth);
-            return;
-          }
-          setCurrentUser(matchedUser);
-          setUserRole(matchedUser.role);
-          setIsLoggedIn(true);
-          setActivePage('jobtask');
-        } else {
-          setErrorCallback('Profil user tidak ditemukan.');
-          await signOut(auth);
-        }
-      }
+      setDataLoaded(false);
+      await signInWithEmailAndPassword(auth, email, password);
     } catch (error) {
       console.error('Login error:', error);
       if (error.code === 'auth/user-not-found' || error.code === 'auth/wrong-password' || error.code === 'auth/invalid-credential') {
         setErrorCallback('Email atau password salah.');
+      } else if (error.code === 'auth/too-many-requests') {
+        setErrorCallback('Terlalu banyak percobaan login. Coba lagi beberapa saat lagi.');
       } else {
         setErrorCallback('Terjadi kesalahan. Silakan coba lagi.');
       }
@@ -449,7 +631,7 @@ export default function App() {
 
   const handleLogout = async () => {
     await signOut(auth);
-    setIsLoggedIn(false); setCurrentUser(null); setUserRole(''); setIsSidebarOpen(false);
+    setIsSidebarOpen(false);
   };
 
   // Filter Logic
@@ -481,6 +663,39 @@ export default function App() {
     });
     return { totalProjects, totalSubtasks, completedSubtasks, waitingReview, revision, pending, workload: Object.entries(workload).map(([name, stats]) => ({ name, ...stats })) };
   }, [tasks]);
+
+  const userByName = useMemo(() => {
+    const entries = users
+      .filter((user) => user?.name)
+      .map((user) => [user.name, user]);
+    return new Map(entries);
+  }, [users]);
+
+  const newUserAvatarPreview = useMemo(
+    () => (newUserAvatarFile ? URL.createObjectURL(newUserAvatarFile) : ""),
+    [newUserAvatarFile]
+  );
+
+  const editUserAvatarPreview = useMemo(
+    () => (editUserAvatarFile ? URL.createObjectURL(editUserAvatarFile) : ""),
+    [editUserAvatarFile]
+  );
+
+  useEffect(() => {
+    return () => {
+      if (newUserAvatarPreview) {
+        URL.revokeObjectURL(newUserAvatarPreview);
+      }
+    };
+  }, [newUserAvatarPreview]);
+
+  useEffect(() => {
+    return () => {
+      if (editUserAvatarPreview) {
+        URL.revokeObjectURL(editUserAvatarPreview);
+      }
+    };
+  }, [editUserAvatarPreview]);
 
   const ganttData = useMemo(() => {
     if (!activeTask || !activeTask.subtasks || activeTask.subtasks.length === 0) return null;
@@ -517,7 +732,7 @@ export default function App() {
         return;
     }
     const parentId = selectedSubtask.parentId || selectedSubtask.taskId;
-    const task = tasks.find(t => t.id === parentId);
+    const task = taskById.get(parentId);
     if (!task) return;
     setEvidenceUploading(true);
     try {
@@ -593,7 +808,7 @@ export default function App() {
 
   const handleSendRevision = async () => {
     if (!subtaskToRevise) return;
-    const task = tasks.find(t => t.id === subtaskToRevise.taskId);
+    const task = taskById.get(subtaskToRevise.taskId);
     if (!task) return;
     const updatedSubtasks = task.subtasks.map(sub => {
       if (sub.id === subtaskToRevise.id) {
@@ -610,7 +825,7 @@ export default function App() {
   const approveSubtask = async (subtaskId, parentTaskId = null) => {
     const targetTaskId = parentTaskId || activeTask?.id;
     if (!targetTaskId) return;
-    const task = tasks.find(t => t.id === targetTaskId);
+    const task = taskById.get(targetTaskId);
     if (!task) return;
     const updatedSubtasks = task.subtasks.map(sub => {
       if (sub.id === subtaskId) return { ...sub, status: 'completed', lastUpdated: getCurrentDateTime() };
@@ -623,7 +838,7 @@ export default function App() {
 
   const deleteSubtask = async (subtaskId) => {
     if (!confirm("Hapus subtask ini?")) return;
-    const task = tasks.find(t => t.id === activeTask.id);
+    const task = taskById.get(activeTask.id);
     if (!task) return;
     const updatedSubtasks = task.subtasks.filter(st => st.id !== subtaskId);
     const updated = recalculateProgress(task, updatedSubtasks);
@@ -632,7 +847,7 @@ export default function App() {
 
   const saveSubtask = async () => {
     if (!subtaskFormTitle) return;
-    const task = tasks.find(t => t.id === activeTask.id);
+    const task = taskById.get(activeTask.id);
     if (!task) return;
     let updatedSubtasks;
     if (editingSubtaskId) {
@@ -769,27 +984,73 @@ export default function App() {
     }
   };
 
+  const validateAvatarFile = (file) => {
+    if (!file) {
+      return { ok: true };
+    }
+
+    if (!ALLOWED_AVATAR_TYPES.includes(file.type)) {
+      return { ok: false, message: 'Foto avatar harus berformat JPG atau PNG.' };
+    }
+
+    if (file.size > AVATAR_MAX_BYTES) {
+      return { ok: false, message: 'Ukuran foto avatar maksimal 2 MB.' };
+    }
+
+    return { ok: true };
+  };
+
+  const handleAvatarFileSelection = (file, mode) => {
+    const validation = validateAvatarFile(file);
+    if (!validation.ok) {
+      alert(validation.message);
+      return;
+    }
+
+    if (mode === 'new') {
+      setNewUserAvatarFile(file || null);
+      return;
+    }
+
+    setEditUserAvatarFile(file || null);
+  };
+
+  const uploadUserAvatar = async (userId, file) => {
+    if (!file) return "";
+
+    const safeExt = file.type === 'image/png' ? 'png' : 'jpg';
+    const fileRef = storageRef(storage, `avatars/${userId}/avatar-${Date.now()}.${safeExt}`);
+    await uploadBytes(fileRef, file, { contentType: file.type });
+    return getDownloadURL(fileRef);
+  };
+
   const handleAddUser = async () => {
     if (!newUserForm.name || !newUserForm.email || !newUserForm.password) return;
+    const secondaryApp = initializeApp(app.options, `action-tracker-admin-${Date.now()}`);
+    const secondaryAuth = getAuth(secondaryApp);
+
     try {
-      const userCredential = await createUserWithEmailAndPassword(auth, newUserForm.email, newUserForm.password);
+      setIsSavingUser(true);
+      const userCredential = await createUserWithEmailAndPassword(secondaryAuth, newUserForm.email, newUserForm.password);
+      const uploadedPhotoURL = await uploadUserAvatar(userCredential.user.uid, newUserAvatarFile);
       await setDoc(doc(db, 'users', userCredential.user.uid), {
         name: newUserForm.name,
         email: newUserForm.email,
         role: newUserForm.role,
         department: newUserForm.department,
+        photoURL: uploadedPhotoURL,
         status: "Inactive"
       });
-      // Sign back in as current admin user (creating a user signs you in as them)
-      if (currentUser && currentUser.email) {
-        // We'll just reload the page to re-auth, since we can't store the admin's password
-        // The onSnapshot listener will pick up the new user
-      }
       setShowAddUserModal(false);
-      setNewUserForm({ name: "", email: "", password: "", role: "Assignee", department: "" });
+      setNewUserForm({ name: "", email: "", password: "", role: "Assignee", department: "", photoURL: "" });
+      setNewUserAvatarFile(null);
+      setShowPassword(false);
     } catch (error) {
       console.error('Error creating user:', error);
       alert('Gagal membuat user: ' + error.message);
+    } finally {
+      setIsSavingUser(false);
+      await deleteApp(secondaryApp);
     }
   };
 
@@ -811,9 +1072,34 @@ export default function App() {
 
   const handleUpdateUser = async () => {
     if (!editUserForm.name || !editUserForm.email) return;
-    const { id, ...updateData } = editUserForm;
-    await updateDoc(doc(db, 'users', id), updateData);
-    setShowEditUserModal(false); setEditUserForm({ id: null, name: "", email: "", password: "", role: "", department: "" });
+    try {
+      setIsSavingUser(true);
+      const { id, ...updateData } = editUserForm;
+      const uploadedPhotoURL = editUserAvatarFile ? await uploadUserAvatar(id, editUserAvatarFile) : (updateData.photoURL || "").trim();
+      await updateDoc(doc(db, 'users', id), {
+        ...updateData,
+        photoURL: uploadedPhotoURL,
+      });
+      setShowEditUserModal(false);
+      setEditUserForm({ id: null, name: "", email: "", role: "", department: "", photoURL: "" });
+      setEditUserAvatarFile(null);
+    } catch (error) {
+      console.error('Error updating user:', error);
+      const storageHint = editUserAvatarFile ? ' Jika gagal saat upload avatar, pastikan Storage Rules terbaru sudah di-deploy.' : '';
+      alert('Gagal menyimpan perubahan user: ' + error.message + storageHint);
+    } finally {
+      setIsSavingUser(false);
+    }
+  };
+
+  const handleEvidenceFileSelection = (files) => {
+    const incomingFiles = Array.from(files || []);
+    const validation = validateEvidenceFiles(incomingFiles);
+    if (!validation.ok) {
+      alert(validation.message);
+      return;
+    }
+    setEvidenceFiles(validation.files);
   };
 
   const handleSaveKPI = async () => {
@@ -873,15 +1159,21 @@ export default function App() {
   const openEditSubtaskModal = (sub) => { setSubtaskFormTitle(sub.title); setSubtaskFormAssignee(sub.assignee); setSubtaskFormDeadline(sub.deadline || ""); setEditingSubtaskId(sub.id); setShowSubtaskModal(true); };
   const openReviseModal = (task, sub) => { setSubtaskToRevise({ taskId: task.id, parentTitle: task.title, parentPic: task.pic, ...sub }); setReviseComment(""); setShowReviseModal(true); };
   const openEvidenceModal = (task, sub) => { setSelectedSubtask({ taskId: task.id, parentTitle: task.title, parentPic: task.pic, ...sub }); setEvidenceText(""); setEvidenceFiles([]); setEvidenceLink(""); setShowEvidenceModal(true); };
-  const handleOpenEditUser = (user) => { setEditUserForm(user); setShowUserDetailModal(false); setShowEditUserModal(true); };
+  const handleOpenEditUser = (user) => {
+    const { password, ...safeUser } = user || {};
+    setEditUserForm({ photoURL: "", ...safeUser });
+    setEditUserAvatarFile(null);
+    setShowUserDetailModal(false);
+    setShowEditUserModal(true);
+  };
 
   const openEventModal = (ev = null) => {
     if (ev) {
       setEditingEvent(ev);
-      setEventForm({ title: ev.title, startDate: ev.startDate, endDate: ev.endDate, location: ev.location, participants: ev.participants || [] });
+      setEventForm({ title: ev.title, startDate: ev.startDate, endDate: ev.endDate, location: ev.location, participants: ev.participants || [], linkedTaskId: ev.linkedTaskId || "" });
     } else {
       setEditingEvent(null);
-      setEventForm({ title: "", startDate: "", endDate: "", location: "", participants: [] });
+      setEventForm({ title: "", startDate: "", endDate: "", location: "", participants: [], linkedTaskId: "" });
     }
     setShowEventModal(true);
   };
@@ -898,7 +1190,7 @@ export default function App() {
     } else {
       await addDoc(collection(db, 'events'), eventForm);
     }
-    setShowEventModal(false); setEventForm({ title: "", startDate: "", endDate: "", location: "", participants: [] }); setEditingEvent(null);
+    setShowEventModal(false); setEventForm({ title: "", startDate: "", endDate: "", location: "", participants: [], linkedTaskId: "" }); setEditingEvent(null);
   };
 
   const handleDeleteEvent = async (id) => {
@@ -1035,7 +1327,7 @@ export default function App() {
           </div>
           <div className="flex items-center gap-3">
             {currentUser && <div className="text-right hidden md:block"><p className="text-sm font-bold text-slate-800">{currentUser.name}</p><p className="text-xs text-slate-500 uppercase">{currentUser.role}</p></div>}
-            {currentUser && <UserAvatar name={currentUser.name} className="w-8 h-8" />}
+            {currentUser && <UserAvatar name={currentUser.name} photoURL={currentUser.photoURL} className="w-8 h-8" />}
           </div>
         </div>
       </header>
@@ -1081,6 +1373,9 @@ export default function App() {
                           <h2 className="text-xl md:text-2xl font-bold text-slate-900 mb-2 pr-4">{activeTask.title}</h2>
                           {userRole === 'PIC' && activeTask.pic === currentUser?.name && (
                             <div className="flex items-center gap-2 mb-2 flex-shrink-0">
+                              <button onClick={() => openEventModal({ linkedTaskId: activeTask.id, title: activeTask.title })} className="p-1.5 text-slate-400 hover:text-emerald-600 hover:bg-emerald-50 rounded transition-colors" title="Jadwalkan Event Terkait">
+                                <CalendarDays className="w-4 h-4" />
+                              </button>
                               <button onClick={() => handleEditMainTask(activeTask)} className="p-1.5 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded transition-colors" title="Edit Main Task">
                                 <PenSquare className="w-4 h-4" />
                               </button>
@@ -1092,12 +1387,24 @@ export default function App() {
                         </div>
                         <p className="text-slate-600 mb-4 text-sm md:text-base">{activeTask.description}</p>
                         <div className="flex flex-col md:flex-row gap-2 md:gap-4 text-sm">
-                          <div className="bg-slate-100 px-3 py-1.5 rounded-lg flex items-center gap-2"><UserAvatar name={activeTask.pic} className="w-5 h-5" /><span>PIC: <span className="font-semibold text-slate-900">{activeTask.pic}</span></span></div>
-                          <div className="bg-slate-100 px-3 py-1.5 rounded-lg flex items-center gap-2"><Calendar className="w-4 h-4 text-slate-500" /><span>Deadline: <span className="font-semibold text-slate-900">{activeTask.deadline}</span></span></div>
-                          {activeTask.isEvent && (
+                          <div className="bg-slate-100 px-3 py-2 rounded-lg flex items-start gap-2">
+                            <UserAvatar name={activeTask.pic} photoURL={userByName.get(activeTask.pic)?.photoURL} className="w-5 h-5 mt-0.5" />
+                            <div className="flex flex-col">
+                              <span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-slate-500">PIC:</span>
+                              <span className="font-semibold text-slate-900">{activeTask.pic}</span>
+                            </div>
+                          </div>
+                          <div className="bg-slate-100 px-3 py-2 rounded-lg flex items-start gap-2">
+                            <Calendar className="w-4 h-4 text-slate-500 mt-0.5" />
+                            <div className="flex flex-col">
+                              <span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-slate-500">Deadline:</span>
+                              <span className="font-semibold text-slate-900">{formatDateIndo(activeTask.deadline)}</span>
+                            </div>
+                          </div>
+                          {(activeTask.isEvent || eventByLinkedTaskId.has(activeTask.id)) && (
                             (() => {
-                              const relatedEvent = events.find(e => e.title === activeTask.title);
-                              let dateDisplay = activeTask.deadline;
+                              const relatedEvent = eventByLinkedTaskId.get(activeTask.id) || eventByTitle.get(activeTask.title);
+                              let dateDisplay = formatDateIndo(activeTask.deadline);
                               if (relatedEvent) {
                                 const formatDmy = (dateStr) => {
                                   if (!dateStr) return "";
@@ -1120,12 +1427,13 @@ export default function App() {
                                     setCoeViewMode('calendar');
                                     navigateTo('coe');
                                   }}
-                                  className="bg-blue-50 border border-blue-200 px-3 py-1.5 rounded-lg flex gap-2 text-blue-800 items-start cursor-pointer hover:bg-blue-100 transition-all"
+                                  className="bg-blue-50 border border-blue-200 px-3 py-2 rounded-lg flex gap-2 text-blue-800 items-start cursor-pointer hover:bg-blue-100 transition-all"
                                   title="Lihat di Calendar Of Event"
                                 >
                                   <CalendarDays className="w-4 h-4 text-blue-600 mt-0.5" />
                                   <div className="flex flex-col">
-                                    <span className="font-semibold text-sm">Event: {activeTask.title}</span>
+                                    <span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-blue-600">Event:</span>
+                                    <span className="font-semibold text-sm">{activeTask.title}</span>
                                     <span className="text-xs text-blue-600 font-medium">{dateDisplay}</span>
                                   </div>
                                 </div>
@@ -1181,7 +1489,7 @@ export default function App() {
                                     <div className="flex-1 w-full min-w-0">
                                       <div className="flex flex-wrap items-center gap-2 mb-3">
                                         <div className="flex items-center gap-1.5 bg-slate-100 px-2 py-0.5 rounded">
-                                          <UserAvatar name={subtask.assignee} className="w-4 h-4" />
+                                          <UserAvatar name={subtask.assignee} photoURL={userByName.get(subtask.assignee)?.photoURL} className="w-4 h-4" />
                                           <span className="text-xs text-slate-600">{subtask.assignee}</span>
                                         </div>
                                         {subtask.deadline && (
@@ -1223,7 +1531,7 @@ export default function App() {
                                               <div className="mt-2 pt-2 border-t border-slate-200/50 space-y-2">
                                                 {subtask.comments.map((comment, idx) => (
                                                   <div key={idx} className="flex items-start gap-2">
-                                                    <UserAvatar name={comment.user} className="w-5 h-5 flex-shrink-0" />
+                                                    <UserAvatar name={comment.user} photoURL={userByName.get(comment.user)?.photoURL} className="w-5 h-5 flex-shrink-0" />
                                                     <div className="flex-1">
                                                       <div className="flex justify-between items-baseline">
                                                         <span className="text-xs font-bold text-slate-700">{comment.user}</span>
@@ -1351,142 +1659,38 @@ export default function App() {
         )}
 
         {activePage === 'user-task' && (
-          <main className="flex-1 overflow-y-auto p-4 md:p-8">
-            <div className="max-w-5xl mx-auto">
-              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
-                <h2 className="text-2xl font-bold text-slate-800 flex items-center gap-2"><div className="bg-blue-600 p-2 rounded-lg text-white"><ClipboardList className="w-6 h-6" /></div>User Task</h2>
-                <div className="relative w-full md:w-auto"><input type="text" placeholder="Cari subtask..." value={userTaskSearch} onChange={(e) => setUserTaskSearch(e.target.value)} className="pl-9 pr-4 py-2 border border-slate-200 rounded-lg text-sm w-full md:w-64 focus:ring-2 focus:ring-blue-500 outline-none" /><Search className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" /></div>
-              </div>
-              <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-                <div className="grid grid-cols-12 gap-4 p-4 border-b border-slate-100 bg-slate-50 text-sm font-semibold text-slate-600"><div className="col-span-6">Judul Subtask</div><div className="col-span-3">Assignee</div><div className="col-span-3">Status</div></div>
-                <div className="divide-y divide-slate-100">
-                  {filteredUserTasks.length > 0 ? (
-                    filteredUserTasks.map(sub => (
-                      <div key={sub.id} onClick={() => handleOpenUserTaskDetail(sub)} className="grid grid-cols-12 gap-4 p-4 items-center hover:bg-slate-50 transition-colors cursor-pointer">
-                        <div className="col-span-6">
-                          <div className="font-medium text-slate-800">{sub.title}</div>
-                          <div className="text-xs text-slate-500 flex items-center gap-1 mt-1"><Calendar className="w-3 h-3" /> {formatDateIndo(sub.deadline)}</div>
-                        </div>
-                        <div className="col-span-3 text-sm text-slate-500 flex items-center gap-2"><UserAvatar name={sub.assignee} className="w-6 h-6" /><span>{sub.assignee}</span></div>
-                        <div className="col-span-3">
-                          {sub.status === 'completed' && <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-green-100 text-green-700"><CheckCircle className="w-3 h-3" /> <span className="hidden md:inline">Completed</span></span>}
-                          {sub.status === 'waiting_review' && <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-yellow-100 text-yellow-700"><Clock className="w-3 h-3" /> <span className="hidden md:inline">Review</span></span>}
-                          {sub.status === 'revision' && <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-red-100 text-red-700"><AlertTriangle className="w-3 h-3" /> <span className="hidden md:inline">Revision</span></span>}
-                          {sub.status === 'pending' && <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-slate-100 text-slate-600"><Circle className="w-3 h-3" /> <span className="hidden md:inline">Pending</span></span>}
-                        </div>
-                      </div>
-                    ))
-                  ) : <div className="p-8 text-center text-slate-400 text-sm">Belum ada task tersedia.</div>}
-                </div>
-              </div>
-            </div>
-          </main>
+          <Suspense fallback={<main className="flex-1 overflow-y-auto p-4 md:p-8 text-sm text-slate-400">Memuat halaman...</main>}>
+            <UserTaskPage
+              userTaskSearch={userTaskSearch}
+              setUserTaskSearch={setUserTaskSearch}
+              filteredUserTasks={filteredUserTasks}
+              handleOpenUserTaskDetail={handleOpenUserTaskDetail}
+              formatDateIndo={formatDateIndo}
+              users={users}
+              UserAvatar={UserAvatar}
+            />
+          </Suspense>
         )}
 
         {activePage === 'file' && (
-          <main className="flex-1 overflow-y-auto p-4 md:p-8 bg-slate-50">
-            <div className="max-w-7xl mx-auto">
-              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
-                <h2 className="text-2xl font-bold text-slate-800 flex items-center gap-2"><div className="bg-blue-600 p-2 rounded-lg text-white"><FileText className="w-6 h-6" /></div>File Manager</h2>
-                <div className="relative w-full md:w-auto"><input type="text" placeholder="Cari file..." value={fileSearch} onChange={(e) => setFileSearch(e.target.value)} className="pl-9 pr-4 py-2 border border-slate-200 rounded-lg text-sm w-full md:w-64 focus:ring-2 focus:ring-blue-500 outline-none" /><Search className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" /></div>
-              </div>
-              <div className="space-y-8">
-                {tasks.map(project => {
-                  // Kumpulkan semua file dari logik lama (evidence) maupun logik baru (evidenceUrls)
-                  let files = [];
-                  project.subtasks.forEach(s => {
-                      if (s.evidenceUrls && s.evidenceUrls.length > 0) {
-                          s.evidenceUrls.forEach(f => {
-                              if (f.name.toLowerCase().includes(fileSearch.toLowerCase()) || s.title.toLowerCase().includes(fileSearch.toLowerCase())) {
-                                  files.push({ ...s, projectId: project.id, displayEvidence: f.name, displayUrl: f.url });
-                              }
-                          });
-                      } else if (s.evidence) {
-                          if (s.evidence.toLowerCase().includes(fileSearch.toLowerCase()) || s.title.toLowerCase().includes(fileSearch.toLowerCase())) {
-                              files.push({ ...s, projectId: project.id, displayEvidence: s.evidence, displayUrl: s.evidenceUrl });
-                          }
-                      }
-                      
-                      // Masukkan juga link
-                      if (s.evidenceLinks && s.evidenceLinks.length > 0) {
-                          s.evidenceLinks.forEach(link => {
-                              if (link.toLowerCase().includes(fileSearch.toLowerCase()) || s.title.toLowerCase().includes(fileSearch.toLowerCase())) {
-                                  files.push({ ...s, projectId: project.id, displayEvidence: link, displayUrl: link, isLink: true });
-                              }
-                          })
-                      }
-                  });
-                  
-                  if (files.length === 0) return null;
-                  return (
-                    <div key={project.id}>
-                      <h3 className="text-lg font-bold text-slate-700 mb-3 pl-1 flex items-center gap-2"><Briefcase className="w-4 h-4 text-slate-400" />{project.title}</h3>
-                      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
-                        {files.map((file, idx) => {
-                          const isLink = file.isLink;
-                          const meta = isLink ? { icon: ExternalLink, color: 'text-blue-500', bg: 'bg-blue-50', label: 'LINK', type: 'link' } : getFileMeta(file.displayEvidence);
-                          const Icon = meta.icon;
-                          return (
-                            <a href={file.displayUrl || '#'} target={file.displayUrl ? '_blank' : undefined} rel="noopener noreferrer" key={`${file.id}-${idx}`} className={`group bg-white rounded-xl border border-slate-200 shadow-sm hover:shadow-md transition-all overflow-hidden flex flex-col ${file.displayUrl ? 'cursor-pointer' : 'cursor-default'}`} onClick={(e) => { if (!file.displayUrl) { e.preventDefault(); } }}>
-                              <div className={`h-32 flex items-center justify-center relative overflow-hidden ${meta.bg}`}>
-                                {meta.type === 'image' ? <img src={file.displayUrl || `https://via.placeholder.com/400x300/e2e8f0/94a3b8?text=${encodeURIComponent(file.displayEvidence)}`} alt={file.displayEvidence} className="w-full h-full object-cover" /> : <Icon className={`w-12 h-12 ${meta.color} group-hover:scale-110 transition-transform`} />}
-                                <div className={`absolute top-2 right-2 px-1.5 py-0.5 rounded text-[10px] font-bold uppercase shadow-sm bg-white/90 ${meta.color}`}>{meta.label}</div>
-                                {file.displayUrl && <div className="absolute inset-0 bg-black/0 group-hover:bg-black/30 transition-colors flex items-center justify-center opacity-0 group-hover:opacity-100"><span className="bg-white text-slate-700 text-xs font-semibold px-3 py-1.5 rounded-full shadow-md flex items-center gap-1"><ExternalLink className="w-3 h-3" /> {isLink ? 'Buka Link' : 'Download'}</span></div>}
-                              </div>
-                              <div className="p-3 flex-1 flex flex-col justify-between">
-                                <div><h4 className="text-sm font-semibold text-slate-700 line-clamp-2 mb-1" title={file.displayEvidence}>{file.displayEvidence}</h4><p className="text-xs text-slate-500 flex items-center gap-1"><span className="truncate">Subtask: {file.title}</span></p></div>
-                                <div className="mt-3 flex items-center justify-between text-xs text-slate-400 pt-2 border-t border-slate-100">
-                                  <span>{file.lastUpdated ? file.lastUpdated.split(' ')[0] : '-'}</span>
-                                  <div title={file.status}>{file.status === 'completed' && <CheckCircle className="w-4 h-4 text-green-500" />}{file.status === 'waiting_review' && <Clock className="w-4 h-4 text-yellow-500" />}{file.status === 'revision' && <AlertTriangle className="w-4 h-4 text-red-500" />}{file.status === 'pending' && <Circle className="w-4 h-4 text-slate-300" />}</div>
-                                </div>
-                              </div>
-                            </a>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  );
-                })}
-                {tasks.every(t => t.subtasks.every(s => !s.evidence && (!s.evidenceUrls || s.evidenceUrls.length === 0) && (!s.evidenceLinks || s.evidenceLinks.length === 0))) && <div className="text-center py-12 text-slate-400"><FileText className="w-12 h-12 mx-auto mb-3 opacity-20" /><p>Belum ada file yang diunggah.</p></div>}
-              </div>
-            </div>
-          </main>
+          <Suspense fallback={<main className="flex-1 overflow-y-auto p-4 md:p-8 text-sm text-slate-400">Memuat halaman...</main>}>
+            <FilePage fileSearch={fileSearch} setFileSearch={setFileSearch} tasks={tasks} getFileMeta={getFileMeta} />
+          </Suspense>
         )}
 
         {activePage === 'dashboard' && (
-          <main className="flex-1 overflow-y-auto p-4 md:p-8 bg-slate-50">
-            <div className="max-w-7xl mx-auto">
-              <div className="mb-6"><h2 className="text-2xl font-bold text-slate-800">Dashboard Monitoring</h2><p className="text-slate-500 text-sm">Ringkasan statistik performa tim dan proyek.</p></div>
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
-                <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm"><p className="text-xs text-slate-500 font-semibold uppercase mb-1">Total Project</p><div className="flex items-center justify-between"><span className="text-2xl font-bold text-slate-800">{dashboardStats.totalProjects}</span><Briefcase className="w-8 h-8 text-blue-100" /></div></div>
-                <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm"><p className="text-xs text-slate-500 font-semibold uppercase mb-1">Total Subtask</p><div className="flex items-center justify-between"><span className="text-2xl font-bold text-slate-800">{dashboardStats.totalSubtasks}</span><List className="w-8 h-8 text-purple-100" /></div></div>
-                <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm"><p className="text-xs text-slate-500 font-semibold uppercase mb-1">Menunggu Review</p><div className="flex items-center justify-between"><span className="text-2xl font-bold text-yellow-600">{dashboardStats.waitingReview}</span><Clock className="w-8 h-8 text-yellow-100" /></div></div>
-                <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm"><p className="text-xs text-slate-500 font-semibold uppercase mb-1">Perlu Revisi</p><div className="flex items-center justify-between"><span className="text-2xl font-bold text-red-600">{dashboardStats.revision}</span><AlertTriangle className="w-8 h-8 text-red-100" /></div></div>
-              </div>
-              <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
-                <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm"><h3 className="font-bold text-slate-700 mb-6 flex items-center gap-2"><PieChart className="w-5 h-5 text-slate-400" /> Distribusi Status</h3><div className="flex justify-center mb-6"><DonutChart data={[{ label: 'Completed', value: dashboardStats.completedSubtasks, color: '#22c55e' }, { label: 'Review', value: dashboardStats.waitingReview, color: '#eab308' }, { label: 'Revision', value: dashboardStats.revision, color: '#ef4444' }, { label: 'Pending', value: dashboardStats.pending, color: '#cbd5e1' }]} /></div><div className="space-y-2 text-sm"><div className="flex justify-between items-center"><span className="flex items-center gap-2"><div className="w-3 h-3 rounded-full bg-green-500"></div>Completed</span> <span className="font-semibold">{dashboardStats.completedSubtasks}</span></div><div className="flex justify-between items-center"><span className="flex items-center gap-2"><div className="w-3 h-3 rounded-full bg-yellow-500"></div>Review</span> <span className="font-semibold">{dashboardStats.waitingReview}</span></div><div className="flex justify-between items-center"><span className="flex items-center gap-2"><div className="w-3 h-3 rounded-full bg-red-500"></div>Revision</span> <span className="font-semibold">{dashboardStats.revision}</span></div><div className="flex justify-between items-center"><span className="flex items-center gap-2"><div className="w-3 h-3 rounded-full bg-slate-300"></div>Pending</span> <span className="font-semibold">{dashboardStats.pending}</span></div></div></div>
-                <div className="lg:col-span-2 bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
-                  <h3 className="font-bold text-slate-700 mb-4 flex items-center gap-2"><Activity className="w-5 h-5 text-slate-400" /> Progress Project</h3>
-                  <div className="space-y-4 overflow-y-auto max-h-[300px] pr-2">
-                    {tasks.map(task => (
-                      <div key={task.id} className="group"><div className="flex justify-between items-center mb-1"><span className="font-medium text-sm text-slate-700 truncate max-w-[70%]">{task.title}</span><span className="text-xs font-bold text-blue-600">{task.progress}%</span></div><div className="w-full bg-slate-100 rounded-full h-2.5 overflow-hidden"><div className="bg-blue-600 h-2.5 rounded-full transition-all duration-500" style={{ width: `${task.progress}%` }}></div></div><div className="flex justify-between text-[10px] text-slate-400 mt-1"><span>Deadline: {task.deadline}</span><span>PIC: {task.pic}</span></div></div>
-                    ))}
-                  </div>
-                </div>
-              </div>
-              <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
-                <h3 className="font-bold text-slate-700 mb-6 flex items-center gap-2"><Users className="w-5 h-5 text-slate-400" /> Beban Kerja Tim</h3>
-                <div className="space-y-4">
-                  {dashboardStats.workload.map((member, idx) => (
-                    <div key={idx} className="flex items-center gap-4"><UserAvatar name={member.name} className="w-8 h-8" /><div className="flex-1"><div className="flex justify-between items-end mb-1"><span className="font-medium text-sm text-slate-700">{member.name}</span><span className="text-xs text-slate-500">{member.completed} / {member.total} Selesai</span></div><div className="flex h-3 rounded-full overflow-hidden bg-slate-100"><div className="bg-green-500 h-full" style={{ width: `${(member.completed / member.total) * 100}%` }}></div></div></div></div>
-                  ))}
-                </div>
-              </div>
-            </div>
-          </main>
+          <Suspense fallback={<main className="flex-1 overflow-y-auto p-4 md:p-8 text-sm text-slate-400">Memuat halaman...</main>}>
+            <DashboardPage dashboardStats={dashboardStats} tasks={tasks} DonutChart={DonutChart} UserAvatar={UserAvatar} />
+          </Suspense>
         )}
 
         {activePage === 'manage-user' && userRole === 'PIC' && (
+          <Suspense fallback={<main className="flex-1 overflow-y-auto p-4 md:p-8 text-sm text-slate-400">Memuat halaman...</main>}>
+            <ManageUserPage users={users} UserAvatar={UserAvatar} handleOpenUserDetail={handleOpenUserDetail} toggleUserStatus={toggleUserStatus} setShowAddUserModal={setShowAddUserModal} />
+          </Suspense>
+        )}
+
+        {false && activePage === 'manage-user' && userRole === 'PIC' && (
           <main className="flex-1 overflow-y-auto p-4 md:p-8">
             <div className="max-w-5xl mx-auto">
               <div className="flex items-center justify-between mb-6">
@@ -1512,6 +1716,12 @@ export default function App() {
 
         {/* KPI MASTER PAGE */}
         {activePage === 'kpi' && (
+          <Suspense fallback={<main className="flex-1 overflow-y-auto p-4 md:p-8 text-sm text-slate-400">Memuat halaman...</main>}>
+            <KpiPage KPI_GROUPS={KPI_GROUPS} kpisByGroup={kpisByGroup} expandedKPIGroups={expandedKPIGroups} toggleKPIGroup={toggleKPIGroup} openKPIModal={openKPIModal} handleDeleteKPI={handleDeleteKPI} />
+          </Suspense>
+        )}
+
+        {false && activePage === 'kpi' && (
           <main className="flex-1 overflow-y-auto p-4 md:p-8">
             <div className="max-w-5xl mx-auto">
               <div className="flex items-center justify-between mb-6">
@@ -1525,8 +1735,8 @@ export default function App() {
               </div>
 
               <div className="space-y-6">
-                {KPI_GROUPS.map(group => {
-                  const groupKpis = (kpis || []).filter(k => k.group === group);
+                  {KPI_GROUPS.map(group => {
+                  const groupKpis = kpisByGroup.get(group) || [];
                   const isExpanded = expandedKPIGroups ? expandedKPIGroups[group] : true;
                   return (
                     <div key={group} className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden transition-all duration-300">
@@ -1571,6 +1781,30 @@ export default function App() {
 
         {/* COE PAGE */}
         {activePage === 'coe' && (
+          <Suspense fallback={<main className="flex-1 overflow-y-auto p-4 md:p-8 text-sm text-slate-400">Memuat halaman...</main>}>
+            <CoePage
+              coeViewMode={coeViewMode}
+              setCoeViewMode={setCoeViewMode}
+              openEventModal={openEventModal}
+              events={events}
+              eventsSorted={eventsSorted}
+              formatDateIndo={formatDateIndo}
+              UserAvatar={UserAvatar}
+              currentCalendarDate={currentCalendarDate}
+              monthNames={monthNames}
+              handlePrevMonth={handlePrevMonth}
+              handleNextMonth={handleNextMonth}
+              getFirstDayOfMonth={getFirstDayOfMonth}
+              getDaysInMonth={getDaysInMonth}
+              calendarEventsByDate={calendarEventsByDate}
+              holidaysByDate={holidaysByDate}
+              handleOpenEventDetail={handleOpenEventDetail}
+              handleDeleteEvent={handleDeleteEvent}
+            />
+          </Suspense>
+        )}
+
+        {false && activePage === 'coe' && (
           <main className="flex-1 overflow-y-auto p-4 md:p-8">
             <div className="max-w-5xl mx-auto">
               <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
@@ -1594,7 +1828,7 @@ export default function App() {
                   {(!events || !Array.isArray(events) || events.length === 0) ? (
                     <div className="col-span-1 md:col-span-2 p-8 text-center bg-white rounded-xl border border-slate-200 text-slate-400 text-sm">Belum ada event yang dijadwalkan.</div>
                   ) : (
-                    [...events].sort((a, b) => new Date(a?.startDate || 0) - new Date(b?.startDate || 0)).map(ev => (
+                    eventsSorted.map(ev => (
                       <div key={ev.id} className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm relative group hover:shadow-md transition-shadow">
                         <div className="absolute top-4 right-4 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
                           <button onClick={() => openEventModal(ev)} className="p-1.5 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded"><Edit2 className="w-4 h-4" /></button>
@@ -1607,7 +1841,7 @@ export default function App() {
                           <div className="flex items-start gap-2 pt-2"><Users className="w-4 h-4 text-slate-400 mt-0.5" />
                             <div className="flex flex-wrap gap-1">
                               {ev.participants && Array.isArray(ev.participants) && ev.participants.length > 0 ? ev.participants.map(p => (
-                                <span key={p} className="bg-slate-100 px-2 py-0.5 rounded text-xs border border-slate-200 flex items-center gap-1.5"><UserAvatar name={p} className="w-3 h-3" />{p}</span>
+                                <span key={p} className="bg-slate-100 px-2 py-0.5 rounded text-xs border border-slate-200 flex items-center gap-1.5"><UserAvatar name={p} photoURL={userByName.get(p)?.photoURL} className="w-3 h-3" />{p}</span>
                               )) : <span className="text-xs italic text-slate-400">Belum ada peserta</span>}
                             </div>
                           </div>
@@ -1638,24 +1872,14 @@ export default function App() {
                       const day = idx + 1;
                       const dateString = `${currentCalendarDate.getFullYear()}-${String(currentCalendarDate.getMonth() + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
 
-                      const dayEvents = (events || []).filter(e => {
-                        const start = new Date(e.startDate);
-                        // If there is no endDate, or if we want to show it only on startDate for simplicity
-                        // To show spanning events, we check if dateString is between start and end date
-                        const end = e.endDate ? new Date(e.endDate) : start;
-                        const current = new Date(dateString);
-                        start.setHours(0, 0, 0, 0);
-                        end.setHours(0, 0, 0, 0);
-                        current.setHours(0, 0, 0, 0);
-                        return current >= start && current <= end;
-                      });
+                      const dayEvents = calendarEventsByDate.get(dateString) || [];
 
                       const isToday = process.env.NODE_ENV !== 'development' && dateString === new Date().toISOString().split('T')[0]; // Simple check
                       // Actually let's use a real today check
                       const todayDate = new Date();
                       const isReallyToday = day === todayDate.getDate() && currentCalendarDate.getMonth() === todayDate.getMonth() && currentCalendarDate.getFullYear() === todayDate.getFullYear();
 
-                      const holidayInfo = holidays.find(h => h.date === dateString);
+                      const holidayInfo = holidaysByDate.get(dateString);
 
                       return (
                         <div key={day} className={`h-24 md:h-32 rounded-lg border p-1 md:p-2 flex flex-col transition-colors ${isReallyToday ? 'bg-blue-50/30 border-blue-200 ring-1 ring-blue-500' : (holidayInfo ? 'bg-red-50/40 border-red-200' : 'bg-white border-slate-200 hover:bg-slate-50')}`}>
@@ -1682,6 +1906,12 @@ export default function App() {
 
         {/* TEMPLATE TASK PAGE */}
         {activePage === 'template-task' && (
+          <Suspense fallback={<main className="flex-1 overflow-y-auto p-4 md:p-8 text-sm text-slate-400">Memuat halaman...</main>}>
+            <TemplateTaskPage taskTemplates={taskTemplates} openTemplateModal={openTemplateModal} handleDeleteTemplate={handleDeleteTemplate} />
+          </Suspense>
+        )}
+
+        {false && activePage === 'template-task' && (
           <main className="flex-1 overflow-y-auto p-4 md:p-8">
             <div className="max-w-5xl mx-auto">
               <div className="flex items-center justify-between mb-6">
@@ -1756,7 +1986,7 @@ export default function App() {
                 <div className="grid grid-cols-2 gap-4 mb-6">
                   <div className="bg-slate-50 p-3 rounded-lg border border-slate-100"><p className="text-xs text-slate-500 font-semibold uppercase mb-1">Deadline</p><p className="text-sm font-medium text-slate-800 flex items-center gap-2"><Calendar className="w-4 h-4 text-blue-500" /> {selectedSubtask.deadline || "-"}</p></div>
                   <div className="bg-slate-50 p-3 rounded-lg border border-slate-100"><p className="text-xs text-slate-500 font-semibold uppercase mb-1">Status</p><div className="text-sm font-medium">{selectedSubtask.status === 'completed' && <span className="text-green-600 flex items-center gap-1"><CheckCircle className="w-4 h-4" /> Completed</span>}{selectedSubtask.status === 'waiting_review' && <span className="text-yellow-600 flex items-center gap-1"><Clock className="w-4 h-4" /> Waiting Review</span>}{selectedSubtask.status === 'revision' && <span className="text-red-600 flex items-center gap-1"><AlertTriangle className="w-4 h-4" /> Revision Needed</span>}{selectedSubtask.status === 'pending' && <span className="text-slate-600 flex items-center gap-1"><Circle className="w-4 h-4" /> Pending</span>}</div></div>
-                  <div className="col-span-2 bg-slate-50 p-3 rounded-lg border border-slate-100"><p className="text-xs text-slate-500 font-semibold uppercase mb-1">Assignee</p><p className="text-sm font-medium text-slate-800 flex items-center gap-2"><UserAvatar name={selectedSubtask.assignee} className="w-5 h-5" />{selectedSubtask.assignee}</p></div>
+                  <div className="col-span-2 bg-slate-50 p-3 rounded-lg border border-slate-100"><p className="text-xs text-slate-500 font-semibold uppercase mb-1">Assignee</p><p className="text-sm font-medium text-slate-800 flex items-center gap-2"><UserAvatar name={selectedSubtask.assignee} photoURL={userByName.get(selectedSubtask.assignee)?.photoURL} className="w-5 h-5" />{selectedSubtask.assignee}</p></div>
                 </div>
                 {(selectedSubtask.evidence || (selectedSubtask.evidenceUrls && selectedSubtask.evidenceUrls.length > 0) || (selectedSubtask.evidenceLinks && selectedSubtask.evidenceLinks.length > 0)) && (
                   <div className="mb-6">
@@ -1801,7 +2031,7 @@ export default function App() {
                             <div className="mt-2 pt-2 border-t border-slate-200/50 space-y-3">
                               {selectedSubtask.comments.map((comment, idx) => (
                                 <div key={idx} className="flex items-start gap-2">
-                                  <UserAvatar name={comment.user} className="w-6 h-6 flex-shrink-0" />
+                                  <UserAvatar name={comment.user} photoURL={userByName.get(comment.user)?.photoURL} className="w-6 h-6 flex-shrink-0" />
                                   <div className="bg-white p-2 rounded-lg border border-slate-200 flex-1 shadow-sm">
                                     <div className="flex justify-between items-baseline mb-1">
                                       <span className="text-xs font-bold text-slate-700">{comment.user}</span>
@@ -1823,7 +2053,7 @@ export default function App() {
                     <h4 className="text-sm font-bold text-slate-700 mb-3 flex items-center gap-2"><Upload className="w-4 h-4 text-blue-600" /> Upload Pekerjaan & Komentar</h4>
                     <div className="space-y-4">
                       <div className="border-2 border-dashed border-slate-300 rounded-lg p-4 flex flex-col items-center justify-center text-slate-500 hover:bg-blue-50 hover:border-blue-400 transition-all group relative">
-                        <input type="file" multiple className="absolute inset-0 w-full h-full opacity-0 cursor-pointer" onChange={(e) => { if (e.target.files) setEvidenceFiles(Array.from(e.target.files)); }} />
+                        <input type="file" multiple accept=".pdf,.doc,.docx,.xls,.xlsx,.csv,.ppt,.pptx,.jpg,.jpeg,.png" className="absolute inset-0 w-full h-full opacity-0 cursor-pointer" onChange={(e) => { if (e.target.files) handleEvidenceFileSelection(e.target.files); }} />
                         <div className="bg-blue-50 p-2 rounded-full mb-2 group-hover:scale-110 transition-transform"><ImageIcon className="w-5 h-5 text-blue-500" /></div>
                         <span className="text-xs font-medium text-slate-600 mb-1">Klik atau Drop file di sini</span>
                         <span className="text-[10px] text-slate-400">Bisa pilih lebih dari 1 file</span>
@@ -1876,7 +2106,7 @@ export default function App() {
               <div className="p-6 space-y-4 overflow-y-auto">
                 
                 <label className={`block border-2 border-dashed rounded-lg p-6 flex flex-col items-center cursor-pointer transition-colors relative ${evidenceFiles.length > 0 ? 'border-emerald-400 bg-emerald-50' : 'border-slate-300 text-slate-500 hover:bg-blue-50 hover:border-blue-400'}`}>
-                  <input type="file" multiple className="hidden" onChange={(e) => { if (e.target.files) setEvidenceFiles(Array.from(e.target.files)); }} />
+                  <input type="file" multiple accept=".pdf,.doc,.docx,.xls,.xlsx,.csv,.ppt,.pptx,.jpg,.jpeg,.png" className="hidden" onChange={(e) => { if (e.target.files) handleEvidenceFileSelection(e.target.files); }} />
                   {evidenceFiles.length > 0 ? (
                     <>
                       <CheckCircle className="w-6 h-6 text-emerald-500 mb-2" />
@@ -2029,7 +2259,7 @@ export default function App() {
               <div className="bg-slate-50 p-4 border-b flex justify-between"><h3 className="font-bold">{editingSubtaskId ? 'Edit Subtask' : 'Tambah Subtask'}</h3><button onClick={() => setShowSubtaskModal(false)}><X className="w-5 h-5" /></button></div>
               <div className="p-6 space-y-4">
                 <input type="text" className="w-full border p-2 rounded-lg text-sm" value={subtaskFormTitle} onChange={(e) => setSubtaskFormTitle(e.target.value)} placeholder="Nama Subtask" />
-                <div><label className="block text-xs font-bold text-slate-500 mb-1 uppercase">Assignee (Member)</label><select className="w-full border p-2 rounded-lg text-sm bg-white" value={subtaskFormAssignee} onChange={(e) => setSubtaskFormAssignee(e.target.value)}><option value="" disabled>-- Pilih Assignee --</option>{users.map(user => (<option key={user.id} value={user.name}>{user.name} ({user.role})</option>))}</select></div>
+                <div><label className="block text-xs font-bold text-slate-500 mb-1 uppercase">Assignee (Member)</label><select className="w-full border p-2 rounded-lg text-sm bg-white" value={subtaskFormAssignee} onChange={(e) => setSubtaskFormAssignee(e.target.value)}><option value="" disabled>-- Pilih Assignee --</option>{activeUsers.map(user => (<option key={user.id} value={user.name}>{user.name} ({user.role})</option>))}</select></div>
                 <input type="date" className="w-full border p-2 rounded-lg text-sm" value={subtaskFormDeadline} onChange={(e) => setSubtaskFormDeadline(e.target.value)} />
               </div>
               <div className="bg-slate-50 p-4 flex justify-end gap-2 border-t"><button onClick={() => setShowSubtaskModal(false)} className="px-4 py-2 text-sm text-slate-600">Batal</button><button onClick={saveSubtask} className="px-4 py-2 bg-blue-600 text-white text-sm rounded-lg">Simpan</button></div>
@@ -2046,13 +2276,28 @@ export default function App() {
               <div className="p-6 space-y-4">
                 <div><label className="block text-xs font-bold text-slate-500 mb-1 uppercase">Full Name</label><input type="text" className="w-full border border-slate-300 rounded-lg p-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none" value={newUserForm.name} onChange={(e) => setNewUserForm({ ...newUserForm, name: e.target.value })} placeholder="e.g. John Doe" /></div>
                 <div><label className="block text-xs font-bold text-slate-500 mb-1 uppercase">Email Address</label><input type="email" className="w-full border border-slate-300 rounded-lg p-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none" value={newUserForm.email} onChange={(e) => setNewUserForm({ ...newUserForm, email: e.target.value })} placeholder="e.g. john@pertamina.com" /></div>
-                <div><label className="block text-xs font-bold text-slate-500 mb-1 uppercase">Password</label><div className="relative"><input type={showPassword ? "text" : "password"} className="w-full border border-slate-300 rounded-lg p-2 pr-10 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none" value={newUserForm.password} onChange={(e) => setNewUserForm({ ...newUserForm, password: e.target.value })} placeholder="Set login password" /><button type="button" onClick={() => setShowPassword(!showPassword)} className="absolute right-3 top-2.5 text-slate-400 hover:text-slate-600">{showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}</button></div></div>
+                <div>
+                  <label className="block text-xs font-bold text-slate-500 mb-1 uppercase">Photo Avatar</label>
+                  <input type="file" accept="image/png,image/jpeg" className="w-full border border-slate-300 rounded-lg p-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none file:mr-3 file:rounded-md file:border-0 file:bg-slate-100 file:px-3 file:py-1.5 file:text-sm file:font-medium file:text-slate-700 hover:file:bg-slate-200" onChange={(e) => handleAvatarFileSelection(e.target.files?.[0] || null, 'new')} />
+                  {newUserAvatarPreview ? (
+                    <div className="mt-3 flex items-center gap-3 rounded-lg border border-slate-200 bg-slate-50 p-3">
+                      <img src={newUserAvatarPreview} alt="Preview avatar baru" className="h-14 w-14 rounded-full object-cover border border-white shadow-sm" />
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-medium text-slate-700">{newUserAvatarFile?.name}</p>
+                        <p className="text-[11px] text-slate-400">Preview avatar baru</p>
+                      </div>
+                    </div>
+                  ) : (
+                    <p className="mt-1 text-[11px] text-slate-400">Format JPG/PNG, maksimal 2 MB.</p>
+                  )}
+                </div>
+                <div><label className="block text-xs font-bold text-slate-500 mb-1 uppercase">Password</label><div className="relative"><input type={showPassword ? "text" : "password"} className="w-full border border-slate-300 rounded-lg p-2 pr-10 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none" value={newUserForm.password} onChange={(e) => setNewUserForm({ ...newUserForm, password: e.target.value })} placeholder="Set login password" autoComplete="new-password" /><button type="button" onClick={() => setShowPassword(!showPassword)} className="absolute right-3 top-2.5 text-slate-400 hover:text-slate-600">{showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}</button></div><p className="mt-1 text-[11px] text-slate-400">Password hanya dipakai untuk membuat akun Firebase dan tidak disimpan di Firestore.</p></div>
                 <div className="grid grid-cols-2 gap-4">
                   <div><label className="block text-xs font-bold text-slate-500 mb-1 uppercase">Role</label><select className="w-full border border-slate-300 rounded-lg p-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none" value={newUserForm.role} onChange={(e) => setNewUserForm({ ...newUserForm, role: e.target.value })}><option value="Assignee">Assignee</option><option value="PIC">PIC</option></select></div>
                   <div><label className="block text-xs font-bold text-slate-500 mb-1 uppercase">Department</label><input type="text" className="w-full border border-slate-300 rounded-lg p-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none" value={newUserForm.department} onChange={(e) => setNewUserForm({ ...newUserForm, department: e.target.value })} placeholder="e.g. Finance" /></div>
                 </div>
               </div>
-              <div className="bg-slate-50 p-4 flex justify-end gap-2 border-t"><button onClick={() => setShowAddUserModal(false)} className="px-4 py-2 text-sm text-slate-600 hover:bg-slate-200 rounded-lg transition-colors">Cancel</button><button onClick={handleAddUser} className="px-4 py-2 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 transition-colors">Create User</button></div>
+              <div className="bg-slate-50 p-4 flex justify-end gap-2 border-t"><button onClick={() => setShowAddUserModal(false)} disabled={isSavingUser} className="px-4 py-2 text-sm text-slate-600 hover:bg-slate-200 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed">Cancel</button><button onClick={handleAddUser} disabled={isSavingUser} className="px-4 py-2 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">{isSavingUser ? 'Creating...' : 'Create User'}</button></div>
             </div>
           </div>
         )
@@ -2066,13 +2311,35 @@ export default function App() {
               <div className="p-6 space-y-4">
                 <div><label className="block text-xs font-bold text-slate-500 mb-1 uppercase">Full Name</label><input type="text" className="w-full border border-slate-300 rounded-lg p-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none" value={editUserForm.name} onChange={(e) => setEditUserForm({ ...editUserForm, name: e.target.value })} placeholder="e.g. John Doe" /></div>
                 <div><label className="block text-xs font-bold text-slate-500 mb-1 uppercase">Email Address</label><input type="email" className="w-full border border-slate-300 rounded-lg p-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none" value={editUserForm.email} onChange={(e) => setEditUserForm({ ...editUserForm, email: e.target.value })} placeholder="e.g. john@pertamina.com" /></div>
-                <div><label className="block text-xs font-bold text-slate-500 mb-1 uppercase">Password</label><div className="relative"><input type={showPassword ? "text" : "password"} className="w-full border border-slate-300 rounded-lg p-2 pr-10 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none" value={editUserForm.password} onChange={(e) => setEditUserForm({ ...editUserForm, password: e.target.value })} placeholder="Set new password (optional)" /><button type="button" onClick={() => setShowPassword(!showPassword)} className="absolute right-3 top-2.5 text-slate-400 hover:text-slate-600">{showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}</button></div></div>
+                <div>
+                  <label className="block text-xs font-bold text-slate-500 mb-1 uppercase">Photo Avatar</label>
+                  <input type="file" accept="image/png,image/jpeg" className="w-full border border-slate-300 rounded-lg p-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none file:mr-3 file:rounded-md file:border-0 file:bg-slate-100 file:px-3 file:py-1.5 file:text-sm file:font-medium file:text-slate-700 hover:file:bg-slate-200" onChange={(e) => handleAvatarFileSelection(e.target.files?.[0] || null, 'edit')} />
+                  {editUserAvatarPreview ? (
+                    <div className="mt-3 flex items-center gap-3 rounded-lg border border-slate-200 bg-slate-50 p-3">
+                      <img src={editUserAvatarPreview} alt="Preview avatar edit user" className="h-14 w-14 rounded-full object-cover border border-white shadow-sm" />
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-medium text-slate-700">{editUserAvatarFile?.name}</p>
+                        <p className="text-[11px] text-slate-400">Preview avatar baru</p>
+                      </div>
+                    </div>
+                  ) : editUserForm.photoURL ? (
+                    <div className="mt-3 flex items-center gap-3 rounded-lg border border-slate-200 bg-slate-50 p-3">
+                      <img src={editUserForm.photoURL} alt="Avatar user saat ini" className="h-14 w-14 rounded-full object-cover border border-white shadow-sm" />
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium text-slate-700">Avatar saat ini</p>
+                        <p className="text-[11px] text-slate-400">Akan tetap dipakai jika tidak memilih file baru.</p>
+                      </div>
+                    </div>
+                  ) : (
+                    <p className="mt-1 text-[11px] text-slate-400">Format JPG/PNG, maksimal 2 MB.</p>
+                  )}
+                </div>
                 <div className="grid grid-cols-2 gap-4">
                   <div><label className="block text-xs font-bold text-slate-500 mb-1 uppercase">Role</label><select className="w-full border border-slate-300 rounded-lg p-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none" value={editUserForm.role} onChange={(e) => setEditUserForm({ ...editUserForm, role: e.target.value })}><option value="Assignee">Assignee</option><option value="PIC">PIC</option></select></div>
                   <div><label className="block text-xs font-bold text-slate-500 mb-1 uppercase">Department</label><input type="text" className="w-full border border-slate-300 rounded-lg p-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none" value={editUserForm.department} onChange={(e) => setEditUserForm({ ...editUserForm, department: e.target.value })} placeholder="e.g. Finance" /></div>
                 </div>
               </div>
-              <div className="bg-slate-50 p-4 flex justify-end gap-2 border-t"><button onClick={() => setShowEditUserModal(false)} className="px-4 py-2 text-sm text-slate-600 hover:bg-slate-200 rounded-lg transition-colors">Cancel</button><button onClick={handleUpdateUser} className="px-4 py-2 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 transition-colors">Save Changes</button></div>
+              <div className="bg-slate-50 p-4 flex justify-end gap-2 border-t"><button onClick={() => setShowEditUserModal(false)} disabled={isSavingUser} className="px-4 py-2 text-sm text-slate-600 hover:bg-slate-200 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed">Cancel</button><button onClick={handleUpdateUser} disabled={isSavingUser} className="px-4 py-2 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">{isSavingUser ? 'Saving...' : 'Save Changes'}</button></div>
             </div>
           </div>
         )
@@ -2084,12 +2351,11 @@ export default function App() {
             <div className="bg-white rounded-xl shadow-xl w-full max-w-sm overflow-hidden text-center">
               <div className="bg-blue-600 h-28 w-full relative"><button onClick={() => setShowUserDetailModal(false)} className="absolute top-3 right-3 text-white/80 hover:text-white p-1 rounded-full hover:bg-white/20 transition-colors"><X className="w-5 h-5" /></button></div>
               <div className="px-6 pb-6 relative">
-                <div className="relative -mt-14 mb-4 flex justify-center"><div className="rounded-full p-1.5 bg-white shadow-lg"><UserAvatar name={selectedUser.name} size={128} className="w-24 h-24" /></div></div>
+                <div className="relative -mt-14 mb-4 flex justify-center"><div className="rounded-full p-1.5 bg-white shadow-lg"><UserAvatar name={selectedUser.name} photoURL={selectedUser.photoURL} size={128} className="w-24 h-24" /></div></div>
                 <div>
                   <h3 className="text-xl font-bold text-slate-800">{selectedUser.name}</h3><p className="text-slate-500 text-sm">{selectedUser.role} • {selectedUser.department}</p>
                   <div className="mt-6 space-y-3 text-left">
                     <div className="flex items-center gap-3 p-3 bg-slate-50 rounded-lg border border-slate-100"><Mail className="w-5 h-5 text-blue-500" /><div className="overflow-hidden"><p className="text-xs text-slate-400 font-bold uppercase">Email</p><p className="text-sm font-medium text-slate-700 truncate" title={selectedUser.email}>{selectedUser.email}</p></div></div>
-                    <div className="flex items-center gap-3 p-3 bg-slate-50 rounded-lg border border-slate-100"><Lock className="w-5 h-5 text-blue-500" /><div><p className="text-xs text-slate-400 font-bold uppercase">Password</p><p className="text-sm font-medium text-slate-700 font-mono">{selectedUser.password || "********"}</p></div></div>
                     <div className="flex items-center gap-3 p-3 bg-slate-50 rounded-lg border border-slate-100"><Building className="w-5 h-5 text-blue-500" /><div><p className="text-xs text-slate-400 font-bold uppercase">Department</p><p className="text-sm font-medium text-slate-700">{selectedUser.department}</p></div></div>
                     <div className="flex items-center gap-3 p-3 bg-slate-50 rounded-lg border border-slate-100"><CheckCircle className="w-5 h-5 text-green-500" /><div><p className="text-xs text-slate-400 font-bold uppercase">Status</p><p className="text-sm font-medium text-green-700">{selectedUser.status}</p></div></div>
                   </div>
@@ -2133,6 +2399,30 @@ export default function App() {
                 <label className="block text-xs font-bold text-slate-500 mb-1 uppercase">Judul Event</label>
                 <input type="text" className="w-full border p-2 rounded-lg text-sm" value={eventForm.title} onChange={(e) => setEventForm({ ...eventForm, title: e.target.value })} placeholder="Masukkan Judul Event" />
               </div>
+              <div>
+                <label className="block text-xs font-bold text-slate-500 mb-1 uppercase">Link ke Main Task (Opsional)</label>
+                {!editingEvent && eventForm.linkedTaskId ? (
+                  <div className="w-full border border-slate-200 bg-slate-50 p-2 text-sm rounded-lg flex justify-between items-center text-slate-700 font-medium">
+                    <span className="truncate">{taskById.get(eventForm.linkedTaskId)?.title || eventForm.linkedTaskId}</span>
+                    <button type="button" onClick={() => setEventForm({ ...eventForm, linkedTaskId: "" })} className="text-slate-400 hover:text-red-500 p-1" title="Batalkan Tautan">
+                      <X className="w-3 h-3" />
+                    </button>
+                  </div>
+                ) : (
+                  <select className="w-full border p-2 rounded-lg text-sm bg-white" value={eventForm.linkedTaskId || ""} onChange={(e) => {
+                    if (e.target.value === "NEW") {
+                      setShowEventModal(false);
+                      openNewTaskModal();
+                    } else {
+                      setEventForm({ ...eventForm, linkedTaskId: e.target.value });
+                    }
+                  }}>
+                    <option value="">-- Tidak ada yang ditautkan --</option>
+                    <option value="NEW" className="font-bold text-blue-600 bg-blue-50">➕ Buat Jobtask Baru...</option>
+                    {tasks.map(task => (<option key={task.id} value={task.id}>{task.title}</option>))}
+                  </select>
+                )}
+              </div>
               <div className="flex gap-4">
                 <div className="w-1/2">
                   <label className="block text-xs font-bold text-slate-500 mb-1 uppercase">Start Date</label>
@@ -2150,12 +2440,12 @@ export default function App() {
               <div>
                 <label className="block text-xs font-bold text-slate-500 mb-2 uppercase">Peserta (User)</label>
                 <div className="bg-slate-50 p-3 rounded-lg border border-slate-200 max-h-48 overflow-y-auto space-y-2">
-                  {users.filter(u => u.status === 'Active').map(user => {
+                  {activeUsers.map(user => {
                     const isSelected = eventForm.participants.includes(user.name);
                     return (
                       <label key={user.id} className="flex items-center gap-3 p-2 rounded hover:bg-white border border-transparent hover:border-slate-200 cursor-pointer transition-colors">
                         <input type="checkbox" checked={isSelected} onChange={() => toggleEventParticipant(user.name)} className="w-4 h-4 text-blue-600 rounded focus:ring-blue-500" />
-                        <UserAvatar name={user.name} className="w-6 h-6" />
+                        <UserAvatar name={user.name} photoURL={user.photoURL} className="w-6 h-6" />
                         <span className="text-sm font-medium text-slate-700 flex-1">{user.name}</span>
                         <span className="text-[10px] bg-slate-200 text-slate-500 px-1.5 py-0.5 rounded">{user.role}</span>
                       </label>
@@ -2206,7 +2496,7 @@ export default function App() {
                         {selectedEventDetail.participants && Array.isArray(selectedEventDetail.participants) && selectedEventDetail.participants.length > 0 ? (
                           selectedEventDetail.participants.map(p => (
                             <div key={p} className="bg-slate-50 border border-slate-200 px-2 py-1 rounded-md text-xs font-medium text-slate-700 flex items-center gap-1.5">
-                              <UserAvatar name={p} className="w-4 h-4" />{p}
+                              <UserAvatar name={p} photoURL={userByName.get(p)?.photoURL} className="w-4 h-4" />{p}
                             </div>
                           ))
                         ) : (
@@ -2274,7 +2564,7 @@ export default function App() {
                         <div className="flex gap-2">
                           <select className="flex-1 w-full border border-slate-300 rounded-lg p-2 text-sm bg-white focus:ring-2 focus:ring-blue-500 focus:outline-none" value={sub.assignee} onChange={(e) => updateTemplateSubtaskRow(idx, 'assignee', e.target.value)}>
                             <option value="">-- Assignee (Opsional) --</option>
-                            {users.map(user => (<option key={user.id} value={user.name}>{user.name}</option>))}
+                            {activeUsers.map(user => (<option key={user.id} value={user.name}>{user.name}</option>))}
                           </select>
                           <div className="flex items-center gap-2 border border-slate-300 rounded-lg p-2 bg-white focus-within:ring-2 focus-within:ring-blue-500">
                             <span className="text-sm text-slate-500 font-semibold whitespace-nowrap">H -</span>

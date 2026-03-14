@@ -1,8 +1,44 @@
 rules_version = '2';
 service firebase.storage {
   match /b/{bucket}/o {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isPic() {
+      return signedIn()
+        && get(/databases/(default)/documents/users/$(request.auth.uid)).data.role == 'PIC';
+    }
+
+    function allowedContentType() {
+      return request.resource.contentType.matches('application/pdf')
+        || request.resource.contentType.matches('application/msword')
+        || request.resource.contentType.matches('application/vnd.openxmlformats-officedocument.wordprocessingml.document')
+        || request.resource.contentType.matches('application/vnd.ms-excel')
+        || request.resource.contentType.matches('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+        || request.resource.contentType.matches('text/csv')
+        || request.resource.contentType.matches('application/vnd.ms-powerpoint')
+        || request.resource.contentType.matches('application/vnd.openxmlformats-officedocument.presentationml.presentation')
+        || request.resource.contentType.matches('image/jpeg')
+        || request.resource.contentType.matches('image/png');
+    }
+
     match /evidence/{allPaths=**} {
-      allow read, write: if request.auth != null;
+      allow read: if signedIn();
+      allow write: if signedIn()
+        && request.resource.size < 10 * 1024 * 1024
+        && allowedContentType();
+    }
+
+    match /avatars/{userId}/{allPaths=**} {
+      allow read: if signedIn();
+      allow write: if signedIn()
+        && (request.auth.uid == userId || isPic())
+        && request.resource.size < 2 * 1024 * 1024
+        && (
+          request.resource.contentType.matches('image/jpeg')
+          || request.resource.contentType.matches('image/png')
+        );
     }
   }
 }

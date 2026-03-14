@@ -1,0 +1,47 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function userDoc() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
+    function isPic() {
+      return signedIn()
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        && userDoc().data.role == 'PIC';
+    }
+
+    match /users/{userId} {
+      allow read: if signedIn() && (request.auth.uid == userId || isPic());
+      allow create, update, delete: if isPic();
+    }
+
+    match /tasks/{taskId} {
+      allow read: if signedIn();
+      allow create, delete: if isPic();
+      allow update: if signedIn() && (
+        isPic()
+        || request.resource.data.diff(resource.data).changedKeys().hasOnly(['subtasks', 'progress'])
+      );
+    }
+
+    match /kpis/{kpiId} {
+      allow read: if signedIn();
+      allow create, update, delete: if isPic();
+    }
+
+    match /events/{eventId} {
+      allow read: if signedIn();
+      allow create, update, delete: if isPic();
+    }
+
+    match /templates/{templateId} {
+      allow read: if signedIn();
+      allow create, update, delete: if isPic();
+    }
+  }
+}
