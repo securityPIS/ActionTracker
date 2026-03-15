@@ -92,15 +92,15 @@ export default function UserTaskPage({
                       </div>
 
                       <div className="flex flex-col items-end gap-2 self-start md:w-[30%] md:flex-row md:items-center md:justify-start md:self-auto">
-                        <div className="min-w-0 text-right md:hidden">
-                          <p className="truncate text-sm font-medium text-slate-800">{sub.assignee}</p>
-                        </div>
-
                         <div className="md:hidden">
-                          <span className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-[11px] font-semibold tracking-[0.08em] ${meta.wrapperClass}`}>
-                            <Icon className="h-4 w-4 flex-none" />
+                          <span className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[9px] font-semibold tracking-[0.06em] ${meta.wrapperClass}`}>
+                            <Icon className="h-3.5 w-3.5 flex-none" />
                             {meta.label}
                           </span>
+                        </div>
+
+                        <div className="min-w-0 text-right md:hidden">
+                          <p className="truncate text-sm font-medium text-slate-800">{sub.assignee}</p>
                         </div>
 
                         <div className="hidden md:flex md:items-center md:gap-4">

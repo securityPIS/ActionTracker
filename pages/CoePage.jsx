@@ -6,8 +6,10 @@ export default function CoePage(props) {
     coeViewMode,
     setCoeViewMode,
     openEventModal,
+    openInternalEventTaskModal,
     events,
     eventsSorted,
+    tasks,
     formatDateIndo,
     UserAvatar,
     currentCalendarDate,
@@ -20,7 +22,37 @@ export default function CoePage(props) {
     holidaysByDate,
     handleOpenEventDetail,
     handleDeleteEvent,
+    setSelectedTaskId,
+    navigateTo,
   } = props;
+
+  const getEventTypeMeta = (eventType) => {
+    if (eventType === 'internal') {
+      return {
+        label: 'Internal',
+        cardClass: 'border-blue-200 bg-blue-50/40',
+        badgeClass: 'border-blue-200 bg-blue-100 text-blue-700',
+        chipClass: 'bg-blue-100 text-blue-700 border-blue-200 hover:bg-blue-200',
+      };
+    }
+
+    return {
+      label: 'External',
+      cardClass: 'border-emerald-200 bg-emerald-50/40',
+      badgeClass: 'border-emerald-200 bg-emerald-100 text-emerald-700',
+      chipClass: 'bg-emerald-100 text-emerald-700 border-emerald-200 hover:bg-emerald-200',
+    };
+  };
+
+  const getLinkedTask = (eventItem) => {
+    if (!eventItem || !Array.isArray(tasks)) return null;
+    return tasks.find((task) => {
+      if (eventItem.linkedTaskId && String(task.id) === String(eventItem.linkedTaskId)) {
+        return true;
+      }
+      return eventItem.eventType === 'internal' && task.title === eventItem.title;
+    }) || null;
+  };
 
   return (
     <main className="flex-1 overflow-y-auto p-4 md:p-8">
@@ -35,9 +67,14 @@ export default function CoePage(props) {
               <button onClick={() => setCoeViewMode('calendar')} className={`flex-1 md:flex-none flex items-center justify-center gap-2 px-4 py-1.5 rounded-md text-sm font-medium transition-all ${coeViewMode === 'calendar' ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}><Calendar className="w-4 h-4" /> Calendar</button>
               <button onClick={() => setCoeViewMode('list')} className={`flex-1 md:flex-none flex items-center justify-center gap-2 px-4 py-1.5 rounded-md text-sm font-medium transition-all ${coeViewMode === 'list' ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}><List className="w-4 h-4" /> List</button>
             </div>
-            <button onClick={() => openEventModal()} className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-medium flex items-center justify-center gap-2 transition-colors whitespace-nowrap">
-              <Plus className="w-4 h-4" /> Add Event
-            </button>
+            <div className="flex flex-wrap items-center gap-2 w-full md:w-auto">
+              <button onClick={() => openEventModal()} className="bg-emerald-100 hover:bg-emerald-200 text-emerald-700 px-4 py-2 rounded-lg text-sm font-medium flex items-center justify-center gap-2 transition-colors whitespace-nowrap border border-emerald-200">
+                <Plus className="w-4 h-4" /> Add External Event
+              </button>
+              <button onClick={openInternalEventTaskModal} className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-medium flex items-center justify-center gap-2 transition-colors whitespace-nowrap">
+                <Plus className="w-4 h-4" /> Add Internal Event
+              </button>
+            </div>
           </div>
         </div>
 
@@ -46,16 +83,35 @@ export default function CoePage(props) {
             {(!events || !Array.isArray(events) || events.length === 0) ? (
               <div className="col-span-1 md:col-span-2 p-8 text-center bg-white rounded-xl border border-slate-200 text-slate-400 text-sm">Belum ada event yang dijadwalkan.</div>
             ) : (
-              eventsSorted.map((ev) => (
-                <div key={ev.id} className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm relative group hover:shadow-md transition-shadow">
+              eventsSorted.map((ev) => {
+                const meta = getEventTypeMeta(ev.eventType);
+                const linkedTask = getLinkedTask(ev);
+                return (
+                <div key={ev.id} className={`p-5 rounded-xl border shadow-sm relative group hover:shadow-md transition-shadow ${meta.cardClass}`}>
                   <div className="absolute top-4 right-4 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
                     <button onClick={() => openEventModal(ev)} className="p-1.5 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded"><Edit2 className="w-4 h-4" /></button>
                     <button onClick={() => handleDeleteEvent(ev.id)} className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded"><Trash2 className="w-4 h-4" /></button>
                   </div>
+                  <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.08em] mb-3 ${meta.badgeClass}`}>{meta.label}</span>
                   <h3 className="font-bold text-slate-800 text-lg mb-3 pr-16">{ev.title}</h3>
                   <div className="space-y-2 text-sm text-slate-600">
                     <div className="flex items-center gap-2"><Calendar className="w-4 h-4 text-slate-400" /> <span className="font-semibold">{formatDateIndo(ev.startDate)}</span> {ev.endDate && ev.endDate !== ev.startDate && <span> - {formatDateIndo(ev.endDate)}</span>}</div>
                     <div className="flex items-center gap-2"><MapPin className="w-4 h-4 text-slate-400" /> <span>{ev.location || 'TBD'}</span></div>
+                    {ev.eventType === 'internal' && linkedTask && (
+                      <div className="flex items-center gap-2">
+                        <CalendarDays className="w-4 h-4 text-slate-400" />
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSelectedTaskId(linkedTask.id);
+                            navigateTo('jobtask');
+                          }}
+                          className="text-sm font-semibold text-blue-600 hover:text-blue-700 hover:underline"
+                        >
+                          {linkedTask.title}
+                        </button>
+                      </div>
+                    )}
                     <div className="flex items-start gap-2 pt-2"><Users className="w-4 h-4 text-slate-400 mt-0.5" />
                       <div className="flex flex-wrap gap-1">
                         {ev.participants && Array.isArray(ev.participants) && ev.participants.length > 0 ? ev.participants.map((p) => (
@@ -65,7 +121,7 @@ export default function CoePage(props) {
                     </div>
                   </div>
                 </div>
-              ))
+              )})
             )}
           </div>
         ) : (
@@ -101,11 +157,13 @@ export default function CoePage(props) {
                       {holidayInfo && <span className="text-[9px] md:text-[10px] text-red-500 font-semibold leading-tight text-center w-full truncate" title={holidayInfo.name}>{holidayInfo.name}</span>}
                     </div>
                     <div className="flex-1 overflow-y-auto space-y-1 pr-1 custom-scrollbar">
-                      {dayEvents.map((ev) => (
-                        <div key={ev.id} onClick={() => handleOpenEventDetail(ev)} className="bg-blue-100 text-blue-700 text-[10px] md:text-xs px-1.5 py-1 rounded truncate cursor-pointer hover:bg-blue-200 transition-colors font-medium border border-blue-200" title={ev.title}>
+                      {dayEvents.map((ev) => {
+                        const meta = getEventTypeMeta(ev.eventType);
+                        return (
+                        <div key={ev.id} onClick={() => handleOpenEventDetail(ev)} className={`${meta.chipClass} text-[10px] md:text-xs px-1.5 py-1 rounded truncate cursor-pointer transition-colors font-medium border`} title={`${meta.label} Event: ${ev.title}`}>
                           {ev.title}
                         </div>
-                      ))}
+                      )})}
                     </div>
                   </div>
                 );

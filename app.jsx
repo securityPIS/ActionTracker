@@ -125,6 +125,7 @@ const DEFAULT_EVENTS = [
     title: "Annual Security Drill",
     startDate: "2026-03-15",
     endDate: "2026-03-16",
+    eventType: "external",
     location: "Main Gate, Area A",
     participants: ["Budi Santoso", "Reza Mahendra"]
   }
@@ -145,6 +146,8 @@ const ALLOWED_EVIDENCE_MIME_TYPES = new Set([
   'image/jpeg',
   'image/png',
 ]);
+const INACTIVITY_LOGOUT_MINUTES = 30;
+const INACTIVITY_LOGOUT_MS = INACTIVITY_LOGOUT_MINUTES * 60 * 1000;
 
 const DEFAULT_TEMPLATES = [
   {
@@ -228,7 +231,13 @@ const getCurrentDateTime = () => {
 
 const formatDateIndo = (dateStr) => {
   if (!dateStr || dateStr === 'TBD') return "-";
-  try { return new Date(dateStr).toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' }); } catch (e) { return dateStr; }
+  try {
+    const parsed = parseDateValue(dateStr);
+    if (!parsed) return dateStr;
+    return parsed.toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' });
+  } catch (e) {
+    return dateStr;
+  }
 };
 
 const parseDateValue = (dateStr) => {
@@ -240,6 +249,11 @@ const parseDateValue = (dateStr) => {
 const toDateInputValue = (date) => {
   if (!(date instanceof Date) || Number.isNaN(date.getTime())) return "";
   return new Date(date.getTime() - (date.getTimezoneOffset() * 60000)).toISOString().slice(0, 10);
+};
+
+const toLocalDateKey = (date) => {
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) return "";
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
 };
 
 const addDays = (date, days) => {
@@ -269,6 +283,26 @@ const getDefaultSubtaskStartDate = (deadlineStr) => {
   const deadlineDate = parseDateValue(deadlineStr);
   if (!deadlineDate) return "";
   return toDateInputValue(addDays(deadlineDate, -3));
+};
+
+const getEventTypeMeta = (eventType) => {
+  if (eventType === 'internal') {
+    return {
+      label: 'Internal',
+      cardClass: 'border-blue-200 bg-blue-50/40',
+      badgeClass: 'bg-blue-100 text-blue-700 border-blue-200',
+      chipClass: 'bg-blue-100 text-blue-700 border-blue-200 hover:bg-blue-200',
+      accentClass: 'bg-blue-600',
+    };
+  }
+
+  return {
+    label: 'External',
+    cardClass: 'border-emerald-200 bg-emerald-50/40',
+    badgeClass: 'bg-emerald-100 text-emerald-700 border-emerald-200',
+    chipClass: 'bg-emerald-100 text-emerald-700 border-emerald-200 hover:bg-emerald-200',
+    accentClass: 'bg-emerald-600',
+  };
 };
 
 const getLatestProjectUpdate = (task) => {
@@ -378,10 +412,15 @@ export default function App() {
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [currentUser, setCurrentUser] = useState(null);
   const [userRole, setUserRole] = useState('');
+  const inactivityTimerRef = useRef(null);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
       if (!firebaseUser) {
+        if (inactivityTimerRef.current) {
+          window.clearTimeout(inactivityTimerRef.current);
+          inactivityTimerRef.current = null;
+        }
         setIsLoggedIn(false);
         setCurrentUser(null);
         setUserRole('');
@@ -441,6 +480,7 @@ export default function App() {
   const [ganttZoomLevel, setGanttZoomLevel] = useState('day');
   const [ganttShowCompleted, setGanttShowCompleted] = useState(true);
   const [ganttTooltip, setGanttTooltip] = useState(null);
+  const [showGanttFilters, setShowGanttFilters] = useState(false);
 
   // Fetch Public Holidays
   useEffect(() => {
@@ -493,6 +533,8 @@ export default function App() {
   const [newTaskIsEvent, setNewTaskIsEvent] = useState(false);
   const [newEventStartDate, setNewEventStartDate] = useState("");
   const [newEventEndDate, setNewEventEndDate] = useState("");
+  const [newEventLocation, setNewEventLocation] = useState("");
+  const [newEventParticipants, setNewEventParticipants] = useState([]);
   const [subtaskFormTitle, setSubtaskFormTitle] = useState("");
   const [subtaskFormAssignee, setSubtaskFormAssignee] = useState("");
   const [subtaskFormDeadline, setSubtaskFormDeadline] = useState("");
@@ -510,7 +552,7 @@ export default function App() {
     'FINANCE': true, 'CUSTOMER FOCUS': true, 'INTERNAL PROCESS': true, 'LEARNING & GROWTH': true
   });
   const [editingEvent, setEditingEvent] = useState(null);
-  const [eventForm, setEventForm] = useState({ title: "", startDate: "", endDate: "", location: "", participants: [], linkedTaskId: "" });
+  const [eventForm, setEventForm] = useState({ title: "", startDate: "", endDate: "", location: "", participants: [], linkedTaskId: "", eventType: "external" });
   const [editingTemplate, setEditingTemplate] = useState(null);
   const [templateForm, setTemplateForm] = useState({ name: "", subtasks: [{ title: "", assignee: "", deadline: "" }] });
   const [selectedTemplateId, setSelectedTemplateId] = useState("");
@@ -523,8 +565,8 @@ export default function App() {
   const [expandedSubtasks, setExpandedSubtasks] = useState({});
 
   const dataNeeds = useMemo(() => ({
-    tasks: ['jobtask', 'user-task', 'file', 'dashboard'].includes(activePage) || showNewTaskModal || showSubtaskModal || showReviseModal || showEvidenceModal || showUserTaskDetailModal || showEventModal,
-    users: ['jobtask', 'dashboard', 'manage-user'].includes(activePage) || showAddUserModal || showEditUserModal || showTemplateModal || showEventModal || showSubtaskModal,
+    tasks: ['jobtask', 'user-task', 'file', 'dashboard', 'coe'].includes(activePage) || showNewTaskModal || showSubtaskModal || showReviseModal || showEvidenceModal || showUserTaskDetailModal || showEventModal || showEventDetailModal,
+    users: ['jobtask', 'user-task', 'dashboard', 'manage-user', 'coe'].includes(activePage) || showAddUserModal || showEditUserModal || showTemplateModal || showEventModal || showSubtaskModal || showNewTaskModal,
     kpis: activePage === 'kpi' || showKPIModal,
     events: activePage === 'coe' || activePage === 'jobtask' || showEventModal || showEventDetailModal,
     templates: activePage === 'template-task' || showTemplateModal || showNewTaskModal,
@@ -580,12 +622,13 @@ export default function App() {
     const map = new Map();
     events.forEach((event) => {
       if (!event?.startDate) return;
-      const start = new Date(event.startDate);
-      const end = new Date(event.endDate || event.startDate);
+      const start = parseDateValue(event.startDate);
+      const end = parseDateValue(event.endDate || event.startDate);
+      if (!start || !end) return;
       start.setHours(0, 0, 0, 0);
       end.setHours(0, 0, 0, 0);
       for (let cursor = new Date(start); cursor <= end; cursor.setDate(cursor.getDate() + 1)) {
-        const key = cursor.toISOString().split('T')[0];
+        const key = toLocalDateKey(cursor);
         if (!map.has(key)) map.set(key, []);
         map.get(key).push(event);
       }
@@ -624,7 +667,16 @@ export default function App() {
     }
     if (dataNeeds.events) {
       unsubs.push(onSnapshot(collection(db, 'events'), (snap) => {
-        setEvents(snap.docs.map(d => ({ ...d.data(), id: d.id })));
+        setEvents(
+          snap.docs.map((d) => {
+            const data = d.data();
+            return {
+              ...data,
+              id: d.id,
+              eventType: data.eventType || (data.linkedTaskId ? 'internal' : 'external'),
+            };
+          })
+        );
       }));
     } else {
       setEvents([]);
@@ -676,10 +728,70 @@ export default function App() {
     }
   };
 
-  const handleLogout = async () => {
+  const performLogout = async (message = '') => {
+    if (inactivityTimerRef.current) {
+      window.clearTimeout(inactivityTimerRef.current);
+      inactivityTimerRef.current = null;
+    }
     await signOut(auth);
     setIsSidebarOpen(false);
+    if (message) {
+      window.alert(message);
+    }
   };
+
+  const handleLogout = async () => {
+    await performLogout();
+  };
+
+  useEffect(() => {
+    if (!isLoggedIn) {
+      if (inactivityTimerRef.current) {
+        window.clearTimeout(inactivityTimerRef.current);
+        inactivityTimerRef.current = null;
+      }
+      return undefined;
+    }
+
+    const resetInactivityTimer = () => {
+      if (inactivityTimerRef.current) {
+        window.clearTimeout(inactivityTimerRef.current);
+      }
+
+      inactivityTimerRef.current = window.setTimeout(() => {
+        void performLogout(`Sesi berakhir karena tidak ada aktivitas selama ${INACTIVITY_LOGOUT_MINUTES} menit.`);
+      }, INACTIVITY_LOGOUT_MS);
+    };
+
+    const handleUserActivity = () => {
+      resetInactivityTimer();
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        resetInactivityTimer();
+      }
+    };
+
+    const activityEvents = ['mousemove', 'mousedown', 'keydown', 'touchstart', 'scroll'];
+    activityEvents.forEach((eventName) => {
+      window.addEventListener(eventName, handleUserActivity, { passive: true });
+    });
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    resetInactivityTimer();
+
+    return () => {
+      activityEvents.forEach((eventName) => {
+        window.removeEventListener(eventName, handleUserActivity);
+      });
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      if (inactivityTimerRef.current) {
+        window.clearTimeout(inactivityTimerRef.current);
+        inactivityTimerRef.current = null;
+      }
+    };
+  }, [isLoggedIn]);
 
   // Filter Logic
   const filteredUserTasks = useMemo(() => {
@@ -790,6 +902,7 @@ export default function App() {
     setGanttZoomLevel(fitSpanDays > 45 ? 'week' : 'day');
     setGanttShowCompleted(true);
     setGanttTooltip(null);
+    setShowGanttFilters(false);
   }, [activeTask?.id]);
 
   const ganttData = useMemo(() => {
@@ -1070,6 +1183,13 @@ export default function App() {
   };
 
   const addNewTask = async () => {
+    const resolvedEventStartDate = newEventStartDate || newTaskDeadline || new Date().toISOString().split('T')[0];
+    const resolvedEventEndDate = newEventEndDate || newTaskDeadline || resolvedEventStartDate;
+    const resolvedEventLocation = newEventLocation.trim() || "TBD";
+    const resolvedEventParticipants = newEventParticipants.length > 0
+      ? newEventParticipants
+      : (newTaskPic ? [newTaskPic] : (currentUser ? [currentUser.name] : []));
+
     if (editingMainTaskId) {
       // Handle Edit
       await updateDoc(doc(db, 'tasks', editingMainTaskId), {
@@ -1081,15 +1201,33 @@ export default function App() {
       });
 
       if (newTaskIsEvent) {
-        const existingEvent = events.find(e => e.title === newTaskTitle && e.startDate === newTaskDeadline);
+        const existingEvent = events.find(e => e.linkedTaskId === editingMainTaskId) || events.find(e => e.title === newTaskTitle && e.eventType === 'internal');
         if (!existingEvent) {
           await addDoc(collection(db, 'events'), {
             title: newTaskTitle,
-            startDate: newEventStartDate || newTaskDeadline || new Date().toISOString().split('T')[0],
-            endDate: newEventEndDate || newTaskDeadline || new Date().toISOString().split('T')[0],
-            location: "TBD",
-            participants: newTaskPic ? [newTaskPic] : (currentUser ? [currentUser.name] : [])
+            startDate: resolvedEventStartDate,
+            endDate: resolvedEventEndDate,
+            location: resolvedEventLocation,
+            participants: resolvedEventParticipants,
+            linkedTaskId: editingMainTaskId,
+            eventType: 'internal',
           });
+        } else {
+          await updateDoc(doc(db, 'events', existingEvent.id), {
+            ...existingEvent,
+            title: newTaskTitle,
+            startDate: resolvedEventStartDate,
+            endDate: resolvedEventEndDate,
+            location: resolvedEventLocation,
+            participants: resolvedEventParticipants,
+            linkedTaskId: editingMainTaskId,
+            eventType: 'internal',
+          });
+        }
+      } else {
+        const existingEvent = events.find((e) => e.linkedTaskId === editingMainTaskId && e.eventType === 'internal');
+        if (existingEvent) {
+          await deleteDoc(doc(db, 'events', existingEvent.id));
         }
       }
     } else {
@@ -1128,18 +1266,20 @@ export default function App() {
         isEvent: newTaskIsEvent
       };
 
+      const docRef = await addDoc(collection(db, 'tasks'), newTaskData);
+      setSelectedTaskId(docRef.id);
+
       if (newTaskIsEvent) {
         await addDoc(collection(db, 'events'), {
           title: newTaskTitle,
-          startDate: newEventStartDate || newTaskDeadline || new Date().toISOString().split('T')[0],
-          endDate: newEventEndDate || newTaskDeadline || new Date().toISOString().split('T')[0],
-          location: "TBD",
-          participants: newTaskPic ? [newTaskPic] : (currentUser ? [currentUser.name] : [])
+          startDate: resolvedEventStartDate,
+          endDate: resolvedEventEndDate,
+          location: resolvedEventLocation,
+          participants: resolvedEventParticipants,
+          linkedTaskId: docRef.id,
+          eventType: 'internal',
         });
       }
-
-      const docRef = await addDoc(collection(db, 'tasks'), newTaskData);
-      setSelectedTaskId(docRef.id);
     }
 
     setShowNewTaskModal(false);
@@ -1151,31 +1291,44 @@ export default function App() {
     setNewTaskIsEvent(false);
     setNewEventStartDate("");
     setNewEventEndDate("");
+    setNewEventLocation("");
+    setNewEventParticipants([]);
     setSelectedTemplateId("");
   };
 
-  const openNewTaskModal = () => {
+  const openNewTaskModal = (options = {}) => {
+    const shouldAddToEvent = options.addToEvent === true;
     setEditingMainTaskId(null);
     setNewTaskTitle("");
     setNewTaskDesc("");
     setNewTaskPic(currentUser?.name || "");
     setNewTaskDeadline("");
-    setNewTaskIsEvent(false);
+    setNewTaskIsEvent(shouldAddToEvent);
     setNewEventStartDate("");
     setNewEventEndDate("");
+    setNewEventLocation("");
+    setNewEventParticipants(currentUser?.name ? [currentUser.name] : []);
     setSelectedTemplateId("");
     setShowNewTaskModal(true);
   };
 
+  const openInternalEventTaskModal = () => {
+    openNewTaskModal({ addToEvent: true });
+  };
+
   const handleEditMainTask = (task) => {
+    const existingEvent = events.find((event) => String(event.linkedTaskId) === String(task.id) && event.eventType === 'internal')
+      || events.find((event) => event.eventType === 'internal' && event.title === task.title);
     setEditingMainTaskId(task.id);
     setNewTaskTitle(task.title);
     setNewTaskDesc(task.description);
     setNewTaskPic(task.pic);
     setNewTaskDeadline(task.deadline);
     setNewTaskIsEvent(task.isEvent || false);
-    setNewEventStartDate(""); // Resetting or fetching if we linked it
-    setNewEventEndDate("");
+    setNewEventStartDate(existingEvent?.startDate || "");
+    setNewEventEndDate(existingEvent?.endDate || "");
+    setNewEventLocation(existingEvent?.location || "");
+    setNewEventParticipants(Array.isArray(existingEvent?.participants) ? existingEvent.participants : (task.pic ? [task.pic] : []));
     setShowNewTaskModal(true);
   };
 
@@ -1379,10 +1532,10 @@ export default function App() {
   const openEventModal = (ev = null) => {
     if (ev) {
       setEditingEvent(ev);
-      setEventForm({ title: ev.title, startDate: ev.startDate, endDate: ev.endDate, location: ev.location, participants: ev.participants || [], linkedTaskId: ev.linkedTaskId || "" });
+      setEventForm({ title: ev.title, startDate: ev.startDate, endDate: ev.endDate, location: ev.location, participants: ev.participants || [], linkedTaskId: ev.linkedTaskId || "", eventType: ev.eventType || (ev.linkedTaskId ? 'internal' : 'external') });
     } else {
       setEditingEvent(null);
-      setEventForm({ title: "", startDate: "", endDate: "", location: "", participants: [], linkedTaskId: "" });
+      setEventForm({ title: "", startDate: "", endDate: "", location: "", participants: [], linkedTaskId: "", eventType: "external" });
     }
     setShowEventModal(true);
   };
@@ -1397,14 +1550,21 @@ export default function App() {
     if (editingEvent) {
       await updateDoc(doc(db, 'events', editingEvent.id), eventForm);
     } else {
-      await addDoc(collection(db, 'events'), eventForm);
+      await addDoc(collection(db, 'events'), { ...eventForm, eventType: 'external', linkedTaskId: "" });
     }
-    setShowEventModal(false); setEventForm({ title: "", startDate: "", endDate: "", location: "", participants: [], linkedTaskId: "" }); setEditingEvent(null);
+    setShowEventModal(false); setEventForm({ title: "", startDate: "", endDate: "", location: "", participants: [], linkedTaskId: "", eventType: "external" }); setEditingEvent(null);
   };
 
   const handleDeleteEvent = async (id) => {
     if (confirm("Hapus event ini?")) {
+      const targetEvent = events.find((event) => String(event.id) === String(id));
       await deleteDoc(doc(db, 'events', id));
+      if (targetEvent?.linkedTaskId) {
+        await updateDoc(doc(db, 'tasks', targetEvent.linkedTaskId), { isEvent: false });
+      }
+      if (selectedEventDetail?.id === id) {
+        setSelectedEventDetail(null);
+      }
     }
   };
 
@@ -1463,6 +1623,14 @@ export default function App() {
         : [...prev.participants, userName];
       return { ...prev, participants: newParticipants };
     });
+  };
+
+  const toggleNewTaskEventParticipant = (userName) => {
+    setNewEventParticipants((prev) => (
+      prev.includes(userName)
+        ? prev.filter((name) => name !== userName)
+        : [...prev, userName]
+    ));
   };
 
   // Show loading screen while data is being fetched from Firestore
@@ -1610,45 +1778,49 @@ export default function App() {
                               <span className="font-semibold text-slate-900">{formatDateIndo(activeTask.deadline)}</span>
                             </div>
                           </div>
-                          {(activeTask.isEvent || eventByLinkedTaskId.has(activeTask.id)) && (
-                            (() => {
-                              const relatedEvent = eventByLinkedTaskId.get(activeTask.id) || eventByTitle.get(activeTask.title);
-                              let dateDisplay = formatDateIndo(activeTask.deadline);
-                              if (relatedEvent) {
-                                const formatDmy = (dateStr) => {
-                                  if (!dateStr) return "";
-                                  const [y, m, d] = dateStr.split('-');
-                                  return `${d}/${m}/${y}`;
-                                };
-                                dateDisplay = `${formatDmy(relatedEvent.startDate)}${relatedEvent.endDate && relatedEvent.endDate !== relatedEvent.startDate ? ` - ${formatDmy(relatedEvent.endDate)}` : ''}`;
-                              }
-
-                              return (
-                                <div
-                                  onClick={() => {
-                                    if (relatedEvent && relatedEvent.startDate) {
-                                      const eventDate = new Date(relatedEvent.startDate);
+                          {(() => {
+                            const relatedEvent = eventByLinkedTaskId.get(activeTask.id) || eventByTitle.get(activeTask.title);
+                            if (!relatedEvent) return null;
+                            return (
+                              <div
+                                onClick={() => {
+                                  if (relatedEvent && relatedEvent.startDate) {
+                                    const eventDate = parseDateValue(relatedEvent.startDate);
+                                    if (eventDate) {
                                       setCurrentCalendarDate(new Date(eventDate.getFullYear(), eventDate.getMonth(), 1));
-                                    } else if (activeTask.deadline && activeTask.deadline !== "TBD") {
-                                      const fallbackDate = new Date(activeTask.deadline);
+                                    }
+                                  } else if (activeTask.deadline && activeTask.deadline !== "TBD") {
+                                    const fallbackDate = parseDateValue(activeTask.deadline);
+                                    if (fallbackDate) {
                                       setCurrentCalendarDate(new Date(fallbackDate.getFullYear(), fallbackDate.getMonth(), 1));
                                     }
-                                    setCoeViewMode('calendar');
-                                    navigateTo('coe');
-                                  }}
-                                  className="bg-blue-50 border border-blue-200 px-3 py-2 rounded-lg flex gap-2 text-blue-800 items-start cursor-pointer hover:bg-blue-100 transition-all"
-                                  title="Lihat di Calendar Of Event"
-                                >
-                                  <CalendarDays className="w-4 h-4 text-blue-600 mt-0.5" />
-                                  <div className="flex flex-col">
-                                    <span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-blue-600">Event:</span>
-                                    <span className="font-semibold text-sm">{activeTask.title}</span>
-                                    <span className="text-xs text-blue-600 font-medium">{dateDisplay}</span>
-                                  </div>
+                                  }
+                                  setCoeViewMode('calendar');
+                                  navigateTo('coe');
+                                }}
+                                className="bg-blue-50 border border-blue-200 px-3 py-2 rounded-lg flex gap-2 text-blue-800 items-start cursor-pointer hover:bg-blue-100 transition-all"
+                                title="Lihat di Calendar Of Event"
+                              >
+                                <CalendarDays className="w-4 h-4 text-blue-600 mt-0.5" />
+                                <div className="flex flex-col">
+                                  <span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-blue-600">Event:</span>
+                                  <span className="font-semibold text-sm">{activeTask.title}</span>
+                                  <span className="text-xs text-blue-600 font-medium">{(() => {
+                                    let dateDisplay = formatDateIndo(activeTask.deadline);
+                                    const formatDmy = (dateStr) => {
+                                      if (!dateStr) return "";
+                                      const [y, m, d] = dateStr.split('-');
+                                      return `${d}/${m}/${y}`;
+                                    };
+                                    if (relatedEvent) {
+                                      dateDisplay = `${formatDmy(relatedEvent.startDate)}${relatedEvent.endDate && relatedEvent.endDate !== relatedEvent.startDate ? ` - ${formatDmy(relatedEvent.endDate)}` : ''}`;
+                                    }
+                                    return dateDisplay;
+                                  })()}</span>
                                 </div>
-                              );
-                            })()
-                          )}
+                              </div>
+                            );
+                          })()}
                         </div>
                       </div>
                       <div className="flex flex-col items-center">
@@ -1807,81 +1979,97 @@ export default function App() {
                       {ganttData ? (
                         <div className="space-y-4">
                           <div className="space-y-3">
-                            <div className="flex flex-wrap items-center gap-2">
-                              {[
-                                { id: '2w', label: '2 Minggu' },
-                                { id: '1m', label: '1 Bulan' },
-                                { id: '3m', label: '3 Bulan' },
-                                { id: 'fit', label: 'Fit' },
-                              ].map((preset) => (
-                                <button
-                                  key={preset.id}
-                                  type="button"
-                                  onClick={() => applyGanttPreset(preset.id)}
-                                  className={`rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors ${ganttRangePreset === preset.id ? 'border-blue-200 bg-blue-50 text-blue-700' : 'border-slate-200 bg-white text-slate-500 hover:border-slate-300 hover:text-slate-700'}`}
-                                >
-                                  {preset.label}
-                                </button>
-                              ))}
-                              <select
-                                value={ganttZoomLevel}
-                                onChange={(e) => setGanttZoomLevel(e.target.value)}
-                                className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-600 outline-none transition focus:border-blue-300"
-                              >
-                                <option value="day">Hari</option>
-                                <option value="week">Minggu</option>
-                              </select>
+                            <div className="flex items-center justify-end">
                               <button
                                 type="button"
-                                onClick={() => {
-                                  const today = new Date();
-                                  today.setHours(0, 0, 0, 0);
-                                  const nextStart = ganttZoomLevel === 'week' ? addDays(today, -14) : addDays(today, -7);
-                                  const nextEnd = ganttZoomLevel === 'week' ? addDays(today, 35) : addDays(today, 7);
-                                  setGanttRangePreset('custom');
-                                  setGanttRangeStart(toDateInputValue(nextStart));
-                                  setGanttRangeEnd(toDateInputValue(nextEnd));
-                                }}
-                                className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-600 transition hover:border-slate-300 hover:text-slate-800"
+                                onClick={() => setShowGanttFilters((prev) => !prev)}
+                                className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-600 transition hover:border-slate-300 hover:text-slate-800"
                               >
-                                Today
+                                <Settings className="w-3.5 h-3.5" />
+                                Filter
+                                {showGanttFilters ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
                               </button>
-                              <label className="flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-600">
-                                <input
-                                  type="checkbox"
-                                  className="h-4 w-4 rounded border-slate-300 text-blue-600"
-                                  checked={ganttShowCompleted}
-                                  onChange={(e) => setGanttShowCompleted(e.target.checked)}
-                                />
-                                Show Completed
-                              </label>
                             </div>
-                            <div className="flex flex-wrap items-center gap-2 text-xs font-medium text-slate-500">
-                              <label className="flex items-center gap-2 rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5">
-                                <span>From</span>
-                                <input
-                                  type="date"
-                                  value={ganttRangeStart}
-                                  onChange={(e) => {
-                                    setGanttRangePreset('custom');
-                                    setGanttRangeStart(e.target.value);
-                                  }}
-                                  className="bg-transparent text-slate-600 outline-none"
-                                />
-                              </label>
-                              <label className="flex items-center gap-2 rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5">
-                                <span>To</span>
-                                <input
-                                  type="date"
-                                  value={ganttRangeEnd}
-                                  onChange={(e) => {
-                                    setGanttRangePreset('custom');
-                                    setGanttRangeEnd(e.target.value);
-                                  }}
-                                  className="bg-transparent text-slate-600 outline-none"
-                                />
-                              </label>
-                            </div>
+
+                            {showGanttFilters && (
+                              <div className="space-y-3 rounded-xl border border-slate-200 bg-slate-50 p-3">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  {[
+                                    { id: '2w', label: '2 Minggu' },
+                                    { id: '1m', label: '1 Bulan' },
+                                    { id: '3m', label: '3 Bulan' },
+                                    { id: 'fit', label: 'Fit' },
+                                  ].map((preset) => (
+                                    <button
+                                      key={preset.id}
+                                      type="button"
+                                      onClick={() => applyGanttPreset(preset.id)}
+                                      className={`rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors ${ganttRangePreset === preset.id ? 'border-blue-200 bg-blue-50 text-blue-700' : 'border-slate-200 bg-white text-slate-500 hover:border-slate-300 hover:text-slate-700'}`}
+                                    >
+                                      {preset.label}
+                                    </button>
+                                  ))}
+                                  <select
+                                    value={ganttZoomLevel}
+                                    onChange={(e) => setGanttZoomLevel(e.target.value)}
+                                    className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-600 outline-none transition focus:border-blue-300"
+                                  >
+                                    <option value="day">Hari</option>
+                                    <option value="week">Minggu</option>
+                                  </select>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      const today = new Date();
+                                      today.setHours(0, 0, 0, 0);
+                                      const nextStart = ganttZoomLevel === 'week' ? addDays(today, -14) : addDays(today, -7);
+                                      const nextEnd = ganttZoomLevel === 'week' ? addDays(today, 35) : addDays(today, 7);
+                                      setGanttRangePreset('custom');
+                                      setGanttRangeStart(toDateInputValue(nextStart));
+                                      setGanttRangeEnd(toDateInputValue(nextEnd));
+                                    }}
+                                    className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-600 transition hover:border-slate-300 hover:text-slate-800"
+                                  >
+                                    Today
+                                  </button>
+                                  <label className="flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-600">
+                                    <input
+                                      type="checkbox"
+                                      className="h-4 w-4 rounded border-slate-300 text-blue-600"
+                                      checked={ganttShowCompleted}
+                                      onChange={(e) => setGanttShowCompleted(e.target.checked)}
+                                    />
+                                    Show Completed
+                                  </label>
+                                </div>
+                                <div className="flex flex-wrap items-center gap-2 text-xs font-medium text-slate-500">
+                                  <label className="flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-1.5">
+                                    <span>From</span>
+                                    <input
+                                      type="date"
+                                      value={ganttRangeStart}
+                                      onChange={(e) => {
+                                        setGanttRangePreset('custom');
+                                        setGanttRangeStart(e.target.value);
+                                      }}
+                                      className="bg-transparent text-slate-600 outline-none"
+                                    />
+                                  </label>
+                                  <label className="flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-1.5">
+                                    <span>To</span>
+                                    <input
+                                      type="date"
+                                      value={ganttRangeEnd}
+                                      onChange={(e) => {
+                                        setGanttRangePreset('custom');
+                                        setGanttRangeEnd(e.target.value);
+                                      }}
+                                      className="bg-transparent text-slate-600 outline-none"
+                                    />
+                                  </label>
+                                </div>
+                              </div>
+                            )}
                           </div>
 
                           <div className="flex flex-wrap items-center gap-4 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-xs text-slate-500">
@@ -2157,8 +2345,10 @@ export default function App() {
               coeViewMode={coeViewMode}
               setCoeViewMode={setCoeViewMode}
               openEventModal={openEventModal}
+              openInternalEventTaskModal={openInternalEventTaskModal}
               events={events}
               eventsSorted={eventsSorted}
+              tasks={tasks}
               formatDateIndo={formatDateIndo}
               UserAvatar={UserAvatar}
               currentCalendarDate={currentCalendarDate}
@@ -2171,6 +2361,8 @@ export default function App() {
               holidaysByDate={holidaysByDate}
               handleOpenEventDetail={handleOpenEventDetail}
               handleDeleteEvent={handleDeleteEvent}
+              setSelectedTaskId={setSelectedTaskId}
+              navigateTo={navigateTo}
             />
           </Suspense>
         )}
@@ -2543,9 +2735,9 @@ export default function App() {
       {
         showNewTaskModal && (
           <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4 backdrop-blur-sm">
-            <div className="bg-white rounded-xl shadow-xl w-full max-w-lg overflow-hidden animate-in fade-in zoom-in duration-200">
-              <div className="bg-slate-50 p-4 border-b flex justify-between"><h3 className="font-bold">{editingMainTaskId ? 'Edit Project' : 'Buat Project Baru'}</h3><button onClick={() => setShowNewTaskModal(false)}><X className="w-5 h-5" /></button></div>
-              <div className="p-6 space-y-4">
+            <div className="bg-white rounded-xl shadow-xl w-full max-w-lg overflow-hidden animate-in fade-in zoom-in duration-200 flex flex-col max-h-[90vh]">
+              <div className="bg-slate-50 p-4 border-b flex justify-between sticky top-0 z-10"><h3 className="font-bold">{editingMainTaskId ? 'Edit Project' : 'Buat Project Baru'}</h3><button onClick={() => setShowNewTaskModal(false)}><X className="w-5 h-5" /></button></div>
+              <div className="p-6 space-y-4 overflow-y-auto">
                 <input type="text" className="w-full border p-2 rounded-lg text-sm" value={newTaskTitle} onChange={(e) => setNewTaskTitle(e.target.value)} placeholder="Nama Project" />
                 <textarea className="w-full border p-2 rounded-lg text-sm" value={newTaskDesc} onChange={(e) => setNewTaskDesc(e.target.value)} placeholder="Deskripsi"></textarea>
 
@@ -2604,20 +2796,42 @@ export default function App() {
                   </label>
 
                   {newTaskIsEvent && (
-                    <div className="flex gap-4 p-3 bg-blue-50/50 rounded-lg mt-2 border border-blue-100 animate-in fade-in slide-in-from-top-2 duration-200">
-                      <div className="w-1/2">
-                        <label className="block text-xs font-bold text-blue-800 mb-1">Event Start Date</label>
-                        <input type="date" className="w-full border border-blue-200 p-2 rounded-lg text-sm bg-white" value={newEventStartDate} onChange={(e) => setNewEventStartDate(e.target.value)} />
+                    <div className="p-3 bg-blue-50/50 rounded-lg mt-2 border border-blue-100 animate-in fade-in slide-in-from-top-2 duration-200 space-y-4">
+                      <div className="flex gap-4">
+                        <div className="w-1/2">
+                          <label className="block text-xs font-bold text-blue-800 mb-1">Event Start Date</label>
+                          <input type="date" className="w-full border border-blue-200 p-2 rounded-lg text-sm bg-white" value={newEventStartDate} onChange={(e) => setNewEventStartDate(e.target.value)} />
+                        </div>
+                        <div className="w-1/2">
+                          <label className="block text-xs font-bold text-blue-800 mb-1">Event End Date</label>
+                          <input type="date" className="w-full border border-blue-200 p-2 rounded-lg text-sm bg-white" value={newEventEndDate} onChange={(e) => setNewEventEndDate(e.target.value)} />
+                        </div>
                       </div>
-                      <div className="w-1/2">
-                        <label className="block text-xs font-bold text-blue-800 mb-1">Event End Date</label>
-                        <input type="date" className="w-full border border-blue-200 p-2 rounded-lg text-sm bg-white" value={newEventEndDate} onChange={(e) => setNewEventEndDate(e.target.value)} />
+                      <div>
+                        <label className="block text-xs font-bold text-blue-800 mb-1">Event Location</label>
+                        <input type="text" className="w-full border border-blue-200 p-2 rounded-lg text-sm bg-white" value={newEventLocation} onChange={(e) => setNewEventLocation(e.target.value)} placeholder="Masukkan lokasi event" />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-bold text-blue-800 mb-2">PIC Event</label>
+                        <div className="bg-white p-3 rounded-lg border border-blue-200 max-h-44 overflow-y-auto space-y-2">
+                          {activeUsers.map((user) => {
+                            const isSelected = newEventParticipants.includes(user.name);
+                            return (
+                              <label key={user.id} className="flex items-center gap-3 p-2 rounded hover:bg-blue-50 border border-transparent hover:border-blue-100 cursor-pointer transition-colors">
+                                <input type="checkbox" checked={isSelected} onChange={() => toggleNewTaskEventParticipant(user.name)} className="w-4 h-4 text-blue-600 rounded focus:ring-blue-500" />
+                                <UserAvatar name={user.name} photoURL={user.photoURL} className="w-6 h-6" />
+                                <span className="text-sm font-medium text-slate-700 flex-1">{user.name}</span>
+                                <span className="text-[10px] bg-slate-200 text-slate-500 px-1.5 py-0.5 rounded">{user.role}</span>
+                              </label>
+                            );
+                          })}
+                        </div>
                       </div>
                     </div>
                   )}
                 </div>
               </div>
-              <div className="bg-slate-50 p-4 flex justify-end gap-2 border-t"><button onClick={() => setShowNewTaskModal(false)} className="px-4 py-2 text-sm text-slate-600">Batal</button><button onClick={addNewTask} className="px-4 py-2 bg-blue-600 text-white text-sm rounded-lg">Simpan</button></div>
+              <div className="bg-slate-50 p-4 flex justify-end gap-2 border-t sticky bottom-0"><button onClick={() => setShowNewTaskModal(false)} className="px-4 py-2 text-sm text-slate-600">Batal</button><button onClick={addNewTask} className="px-4 py-2 bg-blue-600 text-white text-sm rounded-lg">Simpan</button></div>
             </div>
           </div>
         )
@@ -2770,7 +2984,7 @@ export default function App() {
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4 backdrop-blur-sm">
           <div className="bg-white rounded-xl shadow-xl w-full max-w-lg overflow-hidden flex flex-col max-h-[90vh]">
             <div className="bg-slate-50 p-4 border-b flex justify-between items-center sticky top-0 z-10">
-              <h3 className="font-bold">{editingEvent ? 'Edit Event' : 'Add New Event'}</h3>
+              <h3 className="font-bold">{editingEvent ? 'Edit Event' : 'Add External Event'}</h3>
               <button onClick={() => setShowEventModal(false)}><X className="w-5 h-5 text-slate-400 hover:text-slate-600" /></button>
             </div>
             <div className="p-6 space-y-4 overflow-y-auto">
@@ -2778,30 +2992,14 @@ export default function App() {
                 <label className="block text-xs font-bold text-slate-500 mb-1 uppercase">Judul Event</label>
                 <input type="text" className="w-full border p-2 rounded-lg text-sm" value={eventForm.title} onChange={(e) => setEventForm({ ...eventForm, title: e.target.value })} placeholder="Masukkan Judul Event" />
               </div>
-              <div>
-                <label className="block text-xs font-bold text-slate-500 mb-1 uppercase">Link ke Main Task (Opsional)</label>
-                {!editingEvent && eventForm.linkedTaskId ? (
-                  <div className="w-full border border-slate-200 bg-slate-50 p-2 text-sm rounded-lg flex justify-between items-center text-slate-700 font-medium">
-                    <span className="truncate">{taskById.get(eventForm.linkedTaskId)?.title || eventForm.linkedTaskId}</span>
-                    <button type="button" onClick={() => setEventForm({ ...eventForm, linkedTaskId: "" })} className="text-slate-400 hover:text-red-500 p-1" title="Batalkan Tautan">
-                      <X className="w-3 h-3" />
-                    </button>
+              {editingEvent?.eventType === 'internal' && (
+                <div>
+                  <label className="block text-xs font-bold text-slate-500 mb-1 uppercase">Linked Project</label>
+                  <div className="w-full border border-slate-200 bg-slate-50 p-2 text-sm rounded-lg text-slate-700 font-medium">
+                    {taskById.get(eventForm.linkedTaskId)?.title || eventForm.title}
                   </div>
-                ) : (
-                  <select className="w-full border p-2 rounded-lg text-sm bg-white" value={eventForm.linkedTaskId || ""} onChange={(e) => {
-                    if (e.target.value === "NEW") {
-                      setShowEventModal(false);
-                      openNewTaskModal();
-                    } else {
-                      setEventForm({ ...eventForm, linkedTaskId: e.target.value });
-                    }
-                  }}>
-                    <option value="">-- Tidak ada yang ditautkan --</option>
-                    <option value="NEW" className="font-bold text-blue-600 bg-blue-50">➕ Buat Jobtask Baru...</option>
-                    {tasks.map(task => (<option key={task.id} value={task.id}>{task.title}</option>))}
-                  </select>
-                )}
-              </div>
+                </div>
+              )}
               <div className="flex gap-4">
                 <div className="w-1/2">
                   <label className="block text-xs font-bold text-slate-500 mb-1 uppercase">Start Date</label>
@@ -2817,7 +3015,7 @@ export default function App() {
                 <input type="text" className="w-full border p-2 rounded-lg text-sm" value={eventForm.location} onChange={(e) => setEventForm({ ...eventForm, location: e.target.value })} placeholder="Masukkan Lokasi" />
               </div>
               <div>
-                <label className="block text-xs font-bold text-slate-500 mb-2 uppercase">Peserta (User)</label>
+                <label className="block text-xs font-bold text-slate-500 mb-2 uppercase">{editingEvent?.eventType === 'internal' ? 'PIC Event' : 'Peserta (User)'}</label>
                 <div className="bg-slate-50 p-3 rounded-lg border border-slate-200 max-h-48 overflow-y-auto space-y-2">
                   {activeUsers.map(user => {
                     const isSelected = eventForm.participants.includes(user.name);
@@ -2844,12 +3042,26 @@ export default function App() {
       {/* EVENT DETAIL MODAL (Pop-up Card) */}
       {
         showEventDetailModal && selectedEventDetail && (
+          (() => {
+            const eventTypeMeta = getEventTypeMeta(selectedEventDetail.eventType);
+            const linkedTask = tasks.find((task) => {
+              if (selectedEventDetail.linkedTaskId && String(task.id) === String(selectedEventDetail.linkedTaskId)) {
+                return true;
+              }
+              return selectedEventDetail.eventType === 'internal' && task.title === selectedEventDetail.title;
+            }) || null;
+            return (
           <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4 backdrop-blur-sm animate-in fade-in duration-200">
             <div className="bg-white rounded-xl shadow-xl w-full max-w-md overflow-hidden flex flex-col relative">
-              <div className="bg-blue-600 p-5 text-white flex justify-between items-start">
+              <div className={`${eventTypeMeta.accentClass} p-5 text-white flex justify-between items-start`}>
                 <div>
+                  <div className="mb-2">
+                    <span className="inline-flex rounded-full border border-white/30 bg-white/15 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.08em]">
+                      {eventTypeMeta.label} Event
+                    </span>
+                  </div>
                   <h3 className="text-xl font-bold leading-tight mb-1">{selectedEventDetail.title}</h3>
-                  <div className="flex items-center gap-2 text-blue-100 text-sm opacity-90">
+                  <div className="flex items-center gap-2 text-white/90 text-sm opacity-90">
                     <Calendar className="w-4 h-4" />
                     <span>{formatDateIndo(selectedEventDetail.startDate)} {selectedEventDetail.endDate && selectedEventDetail.endDate !== selectedEventDetail.startDate ? ` - ${formatDateIndo(selectedEventDetail.endDate)}` : ''}</span>
                   </div>
@@ -2867,10 +3079,30 @@ export default function App() {
                     </div>
                   </div>
 
+                  {selectedEventDetail.eventType === 'internal' && linkedTask && (
+                    <div className="flex items-start gap-3">
+                      <div className="bg-slate-100 p-2 rounded-lg text-slate-500"><Briefcase className="w-5 h-5" /></div>
+                      <div className="w-full">
+                        <p className="text-xs font-semibold text-slate-500 uppercase mb-0.5">Main Task</p>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setShowEventDetailModal(false);
+                            setSelectedTaskId(linkedTask.id);
+                            navigateTo('jobtask');
+                          }}
+                          className="text-sm font-semibold text-blue-600 hover:text-blue-700 hover:underline"
+                        >
+                          {linkedTask.title}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
                   <div className="flex items-start gap-3">
                     <div className="bg-slate-100 p-2 rounded-lg text-slate-500"><Users className="w-5 h-5" /></div>
                     <div className="w-full">
-                      <p className="text-xs font-semibold text-slate-500 uppercase mb-1.5">Participants</p>
+                      <p className="text-xs font-semibold text-slate-500 uppercase mb-1.5">{selectedEventDetail.eventType === 'internal' ? 'PIC Event' : 'Participants'}</p>
                       <div className="flex flex-wrap gap-2">
                         {selectedEventDetail.participants && Array.isArray(selectedEventDetail.participants) && selectedEventDetail.participants.length > 0 ? (
                           selectedEventDetail.participants.map(p => (
@@ -2909,6 +3141,8 @@ export default function App() {
               </div>
             </div>
           </div>
+            );
+          })()
         )
       }
 
