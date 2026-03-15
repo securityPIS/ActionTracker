@@ -5,11 +5,6 @@ service firebase.storage {
       return request.auth != null;
     }
 
-    function isPic() {
-      return signedIn()
-        && get(/databases/(default)/documents/users/$(request.auth.uid)).data.role == 'PIC';
-    }
-
     function allowedContentType() {
       return request.resource.contentType.matches('application/pdf')
         || request.resource.contentType.matches('application/msword')
@@ -33,7 +28,6 @@ service firebase.storage {
     match /avatars/{userId}/{allPaths=**} {
       allow read: if signedIn();
       allow write: if signedIn()
-        && (request.auth.uid == userId || isPic())
         && request.resource.size < 2 * 1024 * 1024
         && (
           request.resource.contentType.matches('image/jpeg')
