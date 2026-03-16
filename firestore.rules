@@ -15,6 +15,17 @@ service cloud.firestore {
         && userDoc().data.role == 'PIC';
     }
 
+    function currentUserName() {
+      return signedIn()
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        ? userDoc().data.name
+        : "";
+    }
+
+    function isAssignedSubtask(subtaskData) {
+      return signedIn() && subtaskData.assignee == currentUserName();
+    }
+
     match /users/{userId} {
       allow read: if signedIn() && (request.auth.uid == userId || isPic());
       allow create, update, delete: if isPic();
@@ -23,10 +34,37 @@ service cloud.firestore {
     match /tasks/{taskId} {
       allow read: if signedIn();
       allow create, delete: if isPic();
-      allow update: if signedIn() && (
-        isPic()
-        || request.resource.data.diff(resource.data).changedKeys().hasOnly(['subtasks', 'progress'])
-      );
+      allow update: if isPic();
+
+      match /subtasks/{subtaskId} {
+        allow read: if signedIn();
+        allow create: if isPic()
+          || (
+            isAssignedSubtask(request.resource.data)
+            && request.resource.data.parentId == taskId
+            && request.resource.data.status != 'completed'
+          );
+        allow update: if isPic()
+          || (
+            isAssignedSubtask(resource.data)
+            && request.resource.data.parentId == resource.data.parentId
+            && request.resource.data.assignee == resource.data.assignee
+            && request.resource.data.title == resource.data.title
+            && request.resource.data.startDate == resource.data.startDate
+            && request.resource.data.deadline == resource.data.deadline
+            && request.resource.data.diff(resource.data).changedKeys().hasOnly([
+              'status',
+              'evidence',
+              'evidenceUrl',
+              'evidenceUrls',
+              'evidenceLinks',
+              'comments',
+              'lastUpdated'
+            ])
+            && request.resource.data.status != 'completed'
+          );
+        allow delete: if isPic();
+      }
     }
 
     match /kpis/{kpiId} {
@@ -42,6 +80,18 @@ service cloud.firestore {
     match /templates/{templateId} {
       allow read: if signedIn();
       allow create, update, delete: if isPic();
+    }
+
+    match /notifications/{notificationId} {
+      allow read: if signedIn() && resource.data.recipientUserId == request.auth.uid;
+      allow create: if signedIn()
+        && request.resource.data.actorUserId == request.auth.uid
+        && request.resource.data.recipientUserId is string
+        && request.resource.data.isRead == false;
+      allow update: if signedIn()
+        && resource.data.recipientUserId == request.auth.uid
+        && request.resource.data.diff(resource.data).changedKeys().hasOnly(['isRead']);
+      allow delete: if false;
     }
   }
 }

@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useMemo, useRef, lazy, Suspense } from 'react';
 import { initializeApp, deleteApp } from 'firebase/app';
 import app, { db, auth, storage } from './firebase.js';
-import { collection, doc, addDoc, updateDoc, deleteDoc, onSnapshot, setDoc, getDoc } from 'firebase/firestore';
+import { collection, collectionGroup, doc, addDoc, updateDoc, deleteDoc, onSnapshot, setDoc, getDoc, getDocs, query, where } from 'firebase/firestore';
 import { ref as storageRef, uploadBytes, getDownloadURL } from 'firebase/storage';
-import { signInWithEmailAndPassword, signOut, onAuthStateChanged, createUserWithEmailAndPassword, getAuth } from 'firebase/auth';
+import { signInWithEmailAndPassword, signOut, onAuthStateChanged, createUserWithEmailAndPassword, getAuth, setPersistence, browserSessionPersistence } from 'firebase/auth';
 import {
   CheckCircle, Circle, Plus, Users, FileText, Upload, Briefcase, AlertCircle,
   Image as ImageIcon, Calendar, CalendarDays, Layout, Trash2, Edit2, X, Clock, AlertTriangle,
@@ -11,7 +11,7 @@ import {
   LayoutDashboard, LogOut, ChevronDown, ChevronUp, ChevronRight, Settings, ClipboardList,
   Search, Save, ExternalLink, File, Table, Presentation, FileImage, Mail,
   Building, UserPlus, PieChart, Activity, Lock, Eye, EyeOff, Power, LogIn, PenSquare, MapPin,
-  ChevronLeft, Copy
+  ChevronLeft, Copy, Bell, CheckCheck
 } from 'lucide-react';
 
 // --- DATA AWAL (DEFAULT) ---
@@ -366,6 +366,12 @@ const getProjectStatus = (task) => {
   return { label: 'SUBMITTED', color: 'bg-blue-50 border-blue-200', text: 'text-blue-700', badge: 'bg-blue-100 text-blue-700', ring: 'ring-blue-500' };
 };
 
+const calculateTaskProgress = (subtasksList = []) => {
+  if (subtasksList.length === 0) return 0;
+  const completedCount = subtasksList.filter((subtask) => subtask.status === 'completed').length;
+  return Math.round((completedCount / subtasksList.length) * 100);
+};
+
 // --- LOGIN PAGE ---
 const LoginPage = ({ onLogin }) => {
   const [email, setEmail] = useState('');
@@ -401,11 +407,13 @@ const LoginPage = ({ onLogin }) => {
 // --- MAIN APP ---
 export default function App() {
   // Firebase Realtime State
-  const [tasks, setTasks] = useState([]);
+  const [taskDocs, setTaskDocs] = useState([]);
+  const [subtaskDocs, setSubtaskDocs] = useState([]);
   const [users, setUsers] = useState([]);
   const [kpis, setKpis] = useState([]);
   const [events, setEvents] = useState([]);
   const [taskTemplates, setTaskTemplates] = useState([]);
+  const [notifications, setNotifications] = useState([]);
   const [dataLoaded, setDataLoaded] = useState(false);
 
   // Auth State
@@ -424,11 +432,13 @@ export default function App() {
         setIsLoggedIn(false);
         setCurrentUser(null);
         setUserRole('');
-        setTasks([]);
+        setTaskDocs([]);
+        setSubtaskDocs([]);
         setUsers([]);
         setKpis([]);
         setEvents([]);
         setTaskTemplates([]);
+        setNotifications([]);
         setDataLoaded(true);
         return;
       }
@@ -464,7 +474,7 @@ export default function App() {
   }, []);
 
   // UI States
-  const [selectedTaskId, setSelectedTaskId] = useState(tasks[0]?.id || null);
+  const [selectedTaskId, setSelectedTaskId] = useState(null);
   const [showMobileDetail, setShowMobileDetail] = useState(false);
   const [viewMode, setViewMode] = useState('list');
   const [activePage, setActivePage] = useState('jobtask');
@@ -481,6 +491,7 @@ export default function App() {
   const [ganttShowCompleted, setGanttShowCompleted] = useState(true);
   const [ganttTooltip, setGanttTooltip] = useState(null);
   const [showGanttFilters, setShowGanttFilters] = useState(false);
+  const [showNotificationsPanel, setShowNotificationsPanel] = useState(false);
 
   // Fetch Public Holidays
   useEffect(() => {
@@ -585,8 +596,45 @@ export default function App() {
     showUserTaskDetailModal,
   ]);
 
+  const tasks = useMemo(() => {
+    const subtaskOverridesByParent = new Map();
+
+    subtaskDocs.forEach((subtask) => {
+      const parentKey = String(subtask.parentId || '');
+      if (!parentKey) return;
+      if (!subtaskOverridesByParent.has(parentKey)) {
+        subtaskOverridesByParent.set(parentKey, new Map());
+      }
+      subtaskOverridesByParent.get(parentKey).set(String(subtask.id), subtask);
+    });
+
+    return taskDocs.map((task) => {
+      const embeddedSubtasks = Array.isArray(task.subtasks) ? task.subtasks : [];
+      const overrides = subtaskOverridesByParent.get(String(task.id)) || new Map();
+      const mergedSubtasks = embeddedSubtasks.map((subtask) => {
+        const override = overrides.get(String(subtask.id));
+        if (!override) return subtask;
+        if (subtask.assignee && override.assignee && subtask.assignee !== override.assignee) {
+          return subtask;
+        }
+        return { ...subtask, ...override, id: subtask.id };
+      });
+
+      return {
+        ...task,
+        subtasks: mergedSubtasks,
+        progress: calculateTaskProgress(mergedSubtasks),
+      };
+    });
+  }, [subtaskDocs, taskDocs]);
+
   const taskById = useMemo(() => new Map(tasks.map((task) => [task.id, task])), [tasks]);
   const activeUsers = useMemo(() => users.filter((user) => user.status === 'Active'), [users]);
+  const activePicUsers = useMemo(() => activeUsers.filter((user) => user.role === 'PIC'), [activeUsers]);
+  const unreadNotificationsCount = useMemo(
+    () => notifications.filter((notification) => !notification.isRead).length,
+    [notifications]
+  );
   const eventsSorted = useMemo(
     () => [...events].sort((a, b) => new Date(a?.startDate || 0) - new Date(b?.startDate || 0)),
     [events]
@@ -646,10 +694,23 @@ export default function App() {
     const unsubs = [];
     if (dataNeeds.tasks) {
       unsubs.push(onSnapshot(collection(db, 'tasks'), (snap) => {
-        setTasks(snap.docs.map(d => ({ ...d.data(), id: d.id })));
+        setTaskDocs(snap.docs.map(d => ({ ...d.data(), id: d.id })));
+      }));
+      unsubs.push(onSnapshot(collectionGroup(db, 'subtasks'), (snap) => {
+        setSubtaskDocs(
+          snap.docs.map((subtaskDoc) => {
+            const data = subtaskDoc.data();
+            return {
+              ...data,
+              id: data.id ?? subtaskDoc.id,
+              parentId: data.parentId ?? subtaskDoc.ref.parent.parent?.id ?? "",
+            };
+          })
+        );
       }));
     } else {
-      setTasks([]);
+      setTaskDocs([]);
+      setSubtaskDocs([]);
     }
     if (dataNeeds.users) {
       unsubs.push(onSnapshot(collection(db, 'users'), (snap) => {
@@ -715,6 +776,7 @@ export default function App() {
   const handleLogin = async (email, password, setErrorCallback) => {
     try {
       setDataLoaded(false);
+      await setPersistence(auth, browserSessionPersistence);
       await signInWithEmailAndPassword(auth, email, password);
     } catch (error) {
       console.error('Login error:', error);
@@ -741,6 +803,7 @@ export default function App() {
   };
 
   const handleLogout = async () => {
+    setShowNotificationsPanel(false);
     await performLogout();
   };
 
@@ -849,6 +912,27 @@ export default function App() {
       setUserRole(latestCurrentUser.role);
     }
   }, [users, currentUser]);
+
+  useEffect(() => {
+    if (!isLoggedIn || !currentUser?.id) {
+      setNotifications([]);
+      return undefined;
+    }
+
+    const notificationsQuery = query(
+      collection(db, 'notifications'),
+      where('recipientUserId', '==', currentUser.id)
+    );
+
+    const unsubscribe = onSnapshot(notificationsQuery, (snap) => {
+      const nextNotifications = snap.docs
+        .map((notificationDoc) => ({ id: notificationDoc.id, ...notificationDoc.data() }))
+        .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+      setNotifications(nextNotifications);
+    });
+
+    return () => unsubscribe();
+  }, [currentUser?.id, isLoggedIn]);
 
   const newUserAvatarPreview = useMemo(
     () => (newUserAvatarFile ? URL.createObjectURL(newUserAvatarFile) : ""),
@@ -1021,10 +1105,122 @@ export default function App() {
 
   // Actions
   const recalculateProgress = (task, subtasksList) => {
-    if (subtasksList.length === 0) return { ...task, subtasks: subtasksList, progress: 0 };
-    const completedCount = subtasksList.filter(s => s.status === 'completed').length;
-    const newProgress = Math.round((completedCount / subtasksList.length) * 100);
-    return { ...task, subtasks: subtasksList, progress: newProgress };
+    return { ...task, subtasks: subtasksList, progress: calculateTaskProgress(subtasksList) };
+  };
+
+  const getSubtaskDocRef = (taskId, subtaskId) => doc(db, 'tasks', String(taskId), 'subtasks', String(subtaskId));
+
+  const buildSubtaskDocPayload = (task, subtask) => ({
+    id: subtask.id,
+    parentId: String(task.id),
+    title: subtask.title,
+    assignee: subtask.assignee || "Unassigned",
+    startDate: subtask.startDate || "",
+    deadline: subtask.deadline || "TBD",
+    status: subtask.status || "pending",
+    evidence: subtask.evidence || null,
+    evidenceUrl: subtask.evidenceUrl || null,
+    evidenceUrls: Array.isArray(subtask.evidenceUrls) ? subtask.evidenceUrls : [],
+    evidenceLinks: Array.isArray(subtask.evidenceLinks) ? subtask.evidenceLinks : [],
+    comments: Array.isArray(subtask.comments) ? subtask.comments : [],
+    lastUpdated: subtask.lastUpdated || getCurrentDateTime(),
+  });
+
+  const syncSubtaskDoc = async (task, subtask, overrides = {}) => {
+    const payload = { ...buildSubtaskDocPayload(task, subtask), ...overrides };
+    await setDoc(getSubtaskDocRef(task.id, subtask.id), payload, { merge: true });
+    return payload;
+  };
+
+  const deleteSubtaskDoc = async (taskId, subtaskId) => {
+    await deleteDoc(getSubtaskDocRef(taskId, subtaskId));
+  };
+
+  const createNotifications = async (recipients, notificationInput) => {
+    if (!currentUser?.id || !currentUser?.name || !Array.isArray(recipients) || recipients.length === 0) return;
+
+    const uniqueRecipients = recipients.filter((recipient, index, array) => (
+      recipient?.id
+      && recipient.id !== currentUser.id
+      && array.findIndex((item) => item?.id === recipient.id) === index
+    ));
+
+    if (uniqueRecipients.length === 0) return;
+
+    await Promise.all(uniqueRecipients.map((recipient) => addDoc(collection(db, 'notifications'), {
+      recipientUserId: recipient.id,
+      recipientName: recipient.name,
+      type: notificationInput.type,
+      priority: notificationInput.priority || 'medium',
+      title: notificationInput.title,
+      message: notificationInput.message,
+      targetType: notificationInput.targetType || 'subtask',
+      targetId: notificationInput.targetId || '',
+      parentTaskId: notificationInput.parentTaskId || '',
+      actorUserId: currentUser.id,
+      actorName: currentUser.name,
+      isRead: false,
+      createdAt: Date.now(),
+      meta: notificationInput.meta || {},
+    })));
+  };
+
+  const getUserByName = (name) => userByName.get(name) || null;
+
+  const getNotificationTimeLabel = (createdAt) => {
+    if (!createdAt) return '';
+    const diffMinutes = Math.max(0, Math.round((Date.now() - createdAt) / (1000 * 60)));
+    if (diffMinutes < 1) return 'Baru saja';
+    if (diffMinutes < 60) return `${diffMinutes}m lalu`;
+    const diffHours = Math.round(diffMinutes / 60);
+    if (diffHours < 24) return `${diffHours}j lalu`;
+    const diffDays = Math.round(diffHours / 24);
+    return `${diffDays}h lalu`;
+  };
+
+  const markNotificationAsRead = async (notificationId) => {
+    const notification = notifications.find((item) => item.id === notificationId);
+    if (!notification || notification.isRead) return;
+    await updateDoc(doc(db, 'notifications', notificationId), { isRead: true });
+  };
+
+  const markAllNotificationsAsRead = async () => {
+    const unreadNotifications = notifications.filter((notification) => !notification.isRead);
+    await Promise.all(unreadNotifications.map((notification) => updateDoc(doc(db, 'notifications', notification.id), { isRead: true })));
+  };
+
+  const handleNotificationClick = async (notification) => {
+    if (!notification) return;
+    await markNotificationAsRead(notification.id);
+    setShowNotificationsPanel(false);
+
+    if (notification.targetType === 'subtask' && notification.parentTaskId) {
+      const task = taskById.get(notification.parentTaskId);
+      const targetSubtask = task?.subtasks?.find((subtask) => String(subtask.id) === String(notification.targetId));
+      setSelectedTaskId(notification.parentTaskId);
+      setActivePage('jobtask');
+      setShowMobileDetail(true);
+      setViewMode('list');
+
+      if (targetSubtask) {
+        setSelectedSubtask({
+          ...targetSubtask,
+          taskId: task.id,
+          parentId: task.id,
+          parentTitle: task.title,
+          parentPic: task.pic,
+        });
+        setEvidenceText("");
+        setShowUserTaskDetailModal(true);
+      }
+      return;
+    }
+
+    if (notification.targetType === 'task' && notification.targetId) {
+      setSelectedTaskId(notification.targetId);
+      setActivePage('jobtask');
+      setShowMobileDetail(true);
+    }
   };
 
   const submitEvidence = async () => {
@@ -1033,16 +1229,24 @@ export default function App() {
         alert("Pekerjaan wajib menyertakan setidaknya satu file atau satu tautan bukti, atau catatan.");
         return;
     }
+    if (!confirm(`Apakah Anda yakin ingin mengirim subtask "${selectedSubtask.title}"? PIC akan menerima notifikasi untuk review.`)) {
+      return;
+    }
     const parentId = selectedSubtask.parentId || selectedSubtask.taskId;
     const task = taskById.get(parentId);
     if (!task) return;
     setEvidenceUploading(true);
     try {
+      await syncSubtaskDoc(task, selectedSubtask);
       let uploadedEvidenceUrls = selectedSubtask.evidenceUrls || [];
       
       if (evidenceFiles.length > 0) {
         const uploadPromises = evidenceFiles.map(async (file) => {
-          const filePath = `evidence/${parentId}/${selectedSubtask.id}/${Date.now()}_${file.name}`;
+          const ownerId = currentUser?.id || auth.currentUser?.uid;
+          if (!ownerId) {
+            throw new Error('Sesi pengguna tidak valid. Silakan login ulang.');
+          }
+          const filePath = `evidence/${parentId}/${selectedSubtask.id}/${ownerId}/${Date.now()}_${file.name}`;
           const fileRef = storageRef(storage, filePath);
           await uploadBytes(fileRef, file);
           const url = await getDownloadURL(fileRef);
@@ -1068,36 +1272,38 @@ export default function App() {
           evidenceLinksArray = [...evidenceLinksArray, evidenceLink];
       }
 
-      const updatedSubtasks = task.subtasks.map(sub => {
-        if (sub.id === selectedSubtask.id) {
-          
-          let commentFilesStr = "";
-          if (evidenceFiles.length > 0) {
-              commentFilesStr = `File: ${evidenceFiles.map(f=>f.name).join(', ')} `;
-          }
-          let commentLinkStr = "";
-          if (evidenceLink) {
-              commentLinkStr = `Link: ${evidenceLink} `;
-          }
-            
-          const commentText = evidenceText || (commentFilesStr + commentLinkStr).trim() || 'Evidence submitted';
-          const newComment = { text: commentText, type: 'evidence', user: currentUser.name, timestamp: getCurrentDateTime() };
-          
-          return {
-            ...sub,
-            status: 'waiting_review',
-            evidence: legacyEvidenceName,
-            evidenceUrl: legacyEvidenceUrl,
-            evidenceUrls: uploadedEvidenceUrls,
-            evidenceLinks: evidenceLinksArray,
-            comments: [newComment, ...(sub.comments || [])],
-            lastUpdated: getCurrentDateTime()
-          };
-        }
-        return sub;
+      let commentFilesStr = "";
+      if (evidenceFiles.length > 0) {
+          commentFilesStr = `File: ${evidenceFiles.map(f=>f.name).join(', ')} `;
+      }
+      let commentLinkStr = "";
+      if (evidenceLink) {
+          commentLinkStr = `Link: ${evidenceLink} `;
+      }
+        
+      const commentText = evidenceText || (commentFilesStr + commentLinkStr).trim() || 'Evidence submitted';
+      const newComment = { text: commentText, type: 'evidence', user: currentUser.name, timestamp: getCurrentDateTime() };
+      const updatedSubtask = {
+        ...selectedSubtask,
+        status: 'waiting_review',
+        evidence: legacyEvidenceName,
+        evidenceUrl: legacyEvidenceUrl,
+        evidenceUrls: uploadedEvidenceUrls,
+        evidenceLinks: evidenceLinksArray,
+        comments: [newComment, ...(selectedSubtask.comments || [])],
+        lastUpdated: getCurrentDateTime(),
+      };
+      await syncSubtaskDoc(task, updatedSubtask);
+      const picUser = getUserByName(task.pic);
+      await createNotifications(picUser ? [picUser] : [], {
+        type: 'subtask_waiting_review',
+        priority: 'high',
+        title: 'Subtask menunggu review',
+        message: `${currentUser.name} mengirim update untuk "${selectedSubtask.title}".`,
+        targetType: 'subtask',
+        targetId: String(selectedSubtask.id),
+        parentTaskId: String(parentId),
       });
-      const updated = recalculateProgress(task, updatedSubtasks);
-      await updateDoc(doc(db, 'tasks', parentId), { subtasks: updated.subtasks, progress: updated.progress });
       setShowEvidenceModal(false); setShowUserTaskDetailModal(false); setSelectedSubtask(null); 
       setEvidenceFiles([]); setEvidenceLink(""); setEvidenceText("");
     } catch (error) {
@@ -1112,15 +1318,25 @@ export default function App() {
     if (!subtaskToRevise) return;
     const task = taskById.get(subtaskToRevise.taskId);
     if (!task) return;
-    const updatedSubtasks = task.subtasks.map(sub => {
-      if (sub.id === subtaskToRevise.id) {
-        const newComment = { text: reviseComment, type: 'revision', user: currentUser.name, timestamp: getCurrentDateTime() };
-        return { ...sub, status: 'revision', comments: [newComment, ...(sub.comments || [])], lastUpdated: getCurrentDateTime() };
-      }
-      return sub;
+    const targetSubtask = task.subtasks.find((subtask) => String(subtask.id) === String(subtaskToRevise.id));
+    if (!targetSubtask) return;
+    const newComment = { text: reviseComment, type: 'revision', user: currentUser.name, timestamp: getCurrentDateTime() };
+    await syncSubtaskDoc(task, {
+      ...targetSubtask,
+      status: 'revision',
+      comments: [newComment, ...(targetSubtask.comments || [])],
+      lastUpdated: getCurrentDateTime(),
     });
-    const updated = recalculateProgress(task, updatedSubtasks);
-    await updateDoc(doc(db, 'tasks', subtaskToRevise.taskId), { subtasks: updated.subtasks, progress: updated.progress });
+    const assigneeUser = getUserByName(targetSubtask.assignee);
+    await createNotifications(assigneeUser ? [assigneeUser] : [], {
+      type: 'subtask_revision',
+      priority: 'high',
+      title: 'Subtask direvisi',
+      message: `${task.pic || currentUser.name} merevisi "${targetSubtask.title}".`,
+      targetType: 'subtask',
+      targetId: String(targetSubtask.id),
+      parentTaskId: String(task.id),
+    });
     setShowReviseModal(false); setSubtaskToRevise(null);
   };
 
@@ -1129,22 +1345,52 @@ export default function App() {
     if (!targetTaskId) return;
     const task = taskById.get(targetTaskId);
     if (!task) return;
-    const updatedSubtasks = task.subtasks.map(sub => {
-      if (sub.id === subtaskId) return { ...sub, status: 'completed', lastUpdated: getCurrentDateTime() };
-      return sub;
-    });
+    const updatedSubtasks = task.subtasks.map(sub => String(sub.id) === String(subtaskId) ? { ...sub, status: 'completed', lastUpdated: getCurrentDateTime() } : sub);
     const updated = recalculateProgress(task, updatedSubtasks);
-    await updateDoc(doc(db, 'tasks', targetTaskId), { subtasks: updated.subtasks, progress: updated.progress });
+    const approvedSubtask = updated.subtasks.find((subtask) => String(subtask.id) === String(subtaskId));
+    await Promise.all([
+      updateDoc(doc(db, 'tasks', targetTaskId), { subtasks: updated.subtasks, progress: updated.progress }),
+      approvedSubtask ? syncSubtaskDoc(task, approvedSubtask) : Promise.resolve(),
+    ]);
+    if (approvedSubtask) {
+      const assigneeUser = getUserByName(approvedSubtask.assignee);
+      await createNotifications(assigneeUser ? [assigneeUser] : [], {
+        type: 'subtask_approved',
+        priority: 'medium',
+        title: 'Subtask di-approve',
+        message: `"${approvedSubtask.title}" telah di-approve oleh ${task.pic || currentUser.name}.`,
+        targetType: 'subtask',
+        targetId: String(approvedSubtask.id),
+        parentTaskId: String(targetTaskId),
+      });
+    }
   };
 
 
   const deleteSubtask = async (subtaskId) => {
-    if (!confirm("Hapus subtask ini?")) return;
     const task = taskById.get(activeTask.id);
     if (!task) return;
+    const deletedSubtask = task.subtasks.find((subtask) => String(subtask.id) === String(subtaskId));
+    if (!deletedSubtask) return;
+    if (!confirm(`Apakah Anda yakin ingin menghapus subtask "${deletedSubtask.title}"? Perubahan ini akan mengirimkan notifikasi ke assignee terkait.`)) return;
     const updatedSubtasks = task.subtasks.filter(st => st.id !== subtaskId);
     const updated = recalculateProgress(task, updatedSubtasks);
-    await updateDoc(doc(db, 'tasks', activeTask.id), { subtasks: updated.subtasks, progress: updated.progress });
+    await Promise.all([
+      updateDoc(doc(db, 'tasks', activeTask.id), { subtasks: updated.subtasks, progress: updated.progress }),
+      deleteSubtaskDoc(activeTask.id, subtaskId),
+    ]);
+    if (deletedSubtask) {
+      const assigneeUser = getUserByName(deletedSubtask.assignee);
+      await createNotifications(assigneeUser ? [assigneeUser] : [], {
+        type: 'subtask_deleted',
+        priority: 'high',
+        title: 'Subtask dihapus',
+        message: `Subtask "${deletedSubtask.title}" telah dihapus dari project "${task.title}".`,
+        targetType: 'task',
+        targetId: String(task.id),
+        parentTaskId: String(task.id),
+      });
+    }
   };
 
   const saveSubtask = async () => {
@@ -1171,14 +1417,71 @@ export default function App() {
       return;
     }
 
+    const confirmationMessage = editingSubtaskId
+      ? `Apakah Anda yakin ingin menyimpan perubahan subtask "${subtaskFormTitle}"? Perubahan ini akan mengirimkan notifikasi ke assignee terkait.`
+      : `Apakah Anda yakin ingin menambahkan subtask "${subtaskFormTitle}"? Assignee terkait akan menerima notifikasi tugas baru.`;
+    if (!confirm(confirmationMessage)) {
+      return;
+    }
+
     let updatedSubtasks;
+    let savedSubtask;
+    const previousSubtask = editingSubtaskId
+      ? task.subtasks.find((subtask) => String(subtask.id) === String(editingSubtaskId))
+      : null;
     if (editingSubtaskId) {
       updatedSubtasks = task.subtasks.map(st => st.id === editingSubtaskId ? { ...st, title: subtaskFormTitle, assignee: subtaskFormAssignee, startDate: resolvedStartDate || st.startDate || "", deadline: subtaskFormDeadline || st.deadline, lastUpdated: getCurrentDateTime() } : st);
+      savedSubtask = updatedSubtasks.find((subtask) => subtask.id === editingSubtaskId);
     } else {
-      updatedSubtasks = [...task.subtasks, { id: Date.now(), title: subtaskFormTitle, assignee: subtaskFormAssignee || "Unassigned", startDate: resolvedStartDate || "", deadline: subtaskFormDeadline || "TBD", status: "pending", evidence: null, comments: [], lastUpdated: getCurrentDateTime() }];
+      savedSubtask = { id: Date.now(), title: subtaskFormTitle, assignee: subtaskFormAssignee || "Unassigned", startDate: resolvedStartDate || "", deadline: subtaskFormDeadline || "TBD", status: "pending", evidence: null, comments: [], lastUpdated: getCurrentDateTime() };
+      updatedSubtasks = [...task.subtasks, savedSubtask];
     }
     const updated = recalculateProgress(task, updatedSubtasks);
-    await updateDoc(doc(db, 'tasks', activeTask.id), { subtasks: updated.subtasks, progress: updated.progress });
+    await Promise.all([
+      updateDoc(doc(db, 'tasks', activeTask.id), { subtasks: updated.subtasks, progress: updated.progress }),
+      savedSubtask ? syncSubtaskDoc(task, savedSubtask) : Promise.resolve(),
+    ]);
+    if (savedSubtask) {
+      if (editingSubtaskId) {
+        const importantChanged = !previousSubtask
+          || previousSubtask.title !== savedSubtask.title
+          || previousSubtask.assignee !== savedSubtask.assignee
+          || (previousSubtask.startDate || '') !== (savedSubtask.startDate || '')
+          || (previousSubtask.deadline || '') !== (savedSubtask.deadline || '');
+        if (importantChanged) {
+          const recipients = [
+            getUserByName(previousSubtask?.assignee),
+            getUserByName(savedSubtask.assignee),
+          ].filter(Boolean);
+          await createNotifications(recipients, {
+            type: previousSubtask?.assignee !== savedSubtask.assignee ? 'subtask_reassigned' : 'subtask_updated',
+            priority: previousSubtask?.assignee !== savedSubtask.assignee || previousSubtask?.deadline !== savedSubtask.deadline ? 'high' : 'medium',
+            title: previousSubtask?.assignee !== savedSubtask.assignee ? 'Subtask diperbarui dan dipindahkan' : 'Subtask diperbarui',
+            message: `${task.pic || currentUser.name} memperbarui "${savedSubtask.title}" pada project "${task.title}".`,
+            targetType: 'subtask',
+            targetId: String(savedSubtask.id),
+            parentTaskId: String(task.id),
+            meta: {
+              oldAssignee: previousSubtask?.assignee || '',
+              newAssignee: savedSubtask.assignee,
+              oldDeadline: previousSubtask?.deadline || '',
+              newDeadline: savedSubtask.deadline || '',
+            },
+          });
+        }
+      } else {
+        const assigneeUser = getUserByName(savedSubtask.assignee);
+        await createNotifications(assigneeUser ? [assigneeUser] : [], {
+          type: 'subtask_assigned',
+          priority: 'medium',
+          title: 'Subtask baru',
+          message: `Anda mendapat subtask baru: "${savedSubtask.title}".`,
+          targetType: 'subtask',
+          targetId: String(savedSubtask.id),
+          parentTaskId: String(task.id),
+        });
+      }
+    }
     setShowSubtaskModal(false);
   };
 
@@ -1267,6 +1570,10 @@ export default function App() {
       };
 
       const docRef = await addDoc(collection(db, 'tasks'), newTaskData);
+      if (generatedSubtasks.length > 0) {
+        const createdTask = { ...newTaskData, id: docRef.id };
+        await Promise.all(generatedSubtasks.map((subtask) => syncSubtaskDoc(createdTask, subtask)));
+      }
       setSelectedTaskId(docRef.id);
 
       if (newTaskIsEvent) {
@@ -1334,6 +1641,8 @@ export default function App() {
 
   const handleDeleteMainTask = async (taskId) => {
     if (confirm("Yakin ingin menghapus Main Task ini beserta seluruh subtask-nya?")) {
+      const subtaskSnapshots = await getDocs(collection(db, 'tasks', String(taskId), 'subtasks'));
+      await Promise.all(subtaskSnapshots.docs.map((subtaskDoc) => deleteDoc(subtaskDoc.ref)));
       await deleteDoc(doc(db, 'tasks', taskId));
       if (selectedTaskId === taskId) {
         const remainingTasks = tasks.filter(t => t.id !== taskId);
@@ -1513,7 +1822,7 @@ export default function App() {
   // Nav Helpers
   const toggleSidebar = () => setIsSidebarOpen(!isSidebarOpen);
   const toggleUserMenu = () => setIsUserMenuExpanded(!isUserMenuExpanded);
-  const navigateTo = (page) => { setActivePage(page); setIsSidebarOpen(false); };
+  const navigateTo = (page) => { setActivePage(page); setIsSidebarOpen(false); setShowNotificationsPanel(false); };
   const handleTaskClick = (taskId) => { setSelectedTaskId(taskId); setShowMobileDetail(true); setViewMode('list'); };
   const handleOpenUserTaskDetail = (sub) => { setSelectedSubtask(sub); setEvidenceText(""); setShowUserTaskDetailModal(true); };
   const handleOpenUserDetail = (user) => { setSelectedUser(user); setShowUserDetailModal(true); };
@@ -1703,6 +2012,70 @@ export default function App() {
             <h1 className="text-lg font-bold text-slate-900">ActionTracker <span className="text-slate-400 font-normal text-sm hidden md:inline">| Task Monitoring</span></h1>
           </div>
           <div className="flex items-center gap-3">
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setShowNotificationsPanel((prev) => !prev)}
+                className="relative rounded-lg p-2 text-slate-600 transition-colors hover:bg-slate-100"
+                aria-label="Notifications"
+              >
+                <Bell className="h-5 w-5" />
+                {unreadNotificationsCount > 0 && (
+                  <span className="absolute -right-0.5 -top-0.5 min-w-[18px] rounded-full bg-red-500 px-1.5 text-center text-[10px] font-bold leading-[18px] text-white">
+                    {unreadNotificationsCount > 9 ? '9+' : unreadNotificationsCount}
+                  </span>
+                )}
+              </button>
+
+              {showNotificationsPanel && (
+                <div className="absolute right-0 top-12 z-50 w-[360px] max-w-[calc(100vw-2rem)] overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xl">
+                  <div className="flex items-center justify-between border-b border-slate-100 px-4 py-3">
+                    <div>
+                      <p className="text-sm font-semibold text-slate-900">Notifications</p>
+                      <p className="text-xs text-slate-400">{unreadNotificationsCount} unread</p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={markAllNotificationsAsRead}
+                      disabled={unreadNotificationsCount === 0}
+                      className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-medium text-blue-600 transition-colors hover:bg-blue-50 disabled:cursor-not-allowed disabled:text-slate-300"
+                    >
+                      <CheckCheck className="h-3.5 w-3.5" />
+                      Mark all read
+                    </button>
+                  </div>
+
+                  <div className="max-h-[420px] overflow-y-auto">
+                    {notifications.length === 0 ? (
+                      <div className="px-4 py-10 text-center text-sm text-slate-400">
+                        Belum ada notifikasi.
+                      </div>
+                    ) : (
+                      notifications.map((notification) => (
+                        <button
+                          key={notification.id}
+                          type="button"
+                          onClick={() => handleNotificationClick(notification)}
+                          className={`block w-full border-b border-slate-100 px-4 py-3 text-left transition-colors hover:bg-slate-50 ${notification.isRead ? 'bg-white' : 'bg-blue-50/40'}`}
+                        >
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="min-w-0">
+                              <p className="truncate text-sm font-semibold text-slate-800">{notification.title}</p>
+                              <p className="mt-1 text-xs leading-5 text-slate-500">{notification.message}</p>
+                            </div>
+                            {!notification.isRead && <span className="mt-1 h-2.5 w-2.5 flex-shrink-0 rounded-full bg-blue-500" />}
+                          </div>
+                          <div className="mt-2 flex items-center justify-between text-[11px] text-slate-400">
+                            <span className="uppercase tracking-[0.08em]">{notification.priority || 'medium'}</span>
+                            <span>{getNotificationTimeLabel(notification.createdAt)}</span>
+                          </div>
+                        </button>
+                      ))
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
             {currentUser && <div className="text-right hidden md:block"><p className="text-sm font-bold text-slate-800">{currentUser.name}</p><p className="text-xs text-slate-500 uppercase">{currentUser.role}</p></div>}
             {currentUser && <UserAvatar name={currentUser.name} photoURL={currentUser.photoURL} className="w-8 h-8" />}
           </div>
@@ -2344,6 +2717,7 @@ export default function App() {
             <CoePage
               coeViewMode={coeViewMode}
               setCoeViewMode={setCoeViewMode}
+              userRole={userRole}
               openEventModal={openEventModal}
               openInternalEventTaskModal={openInternalEventTaskModal}
               events={events}
@@ -2814,7 +3188,7 @@ export default function App() {
                       <div>
                         <label className="block text-xs font-bold text-blue-800 mb-2">PIC Event</label>
                         <div className="bg-white p-3 rounded-lg border border-blue-200 max-h-44 overflow-y-auto space-y-2">
-                          {activeUsers.map((user) => {
+                          {activePicUsers.map((user) => {
                             const isSelected = newEventParticipants.includes(user.name);
                             return (
                               <label key={user.id} className="flex items-center gap-3 p-2 rounded hover:bg-blue-50 border border-transparent hover:border-blue-100 cursor-pointer transition-colors">
@@ -3017,7 +3391,7 @@ export default function App() {
               <div>
                 <label className="block text-xs font-bold text-slate-500 mb-2 uppercase">{editingEvent?.eventType === 'internal' ? 'PIC Event' : 'Peserta (User)'}</label>
                 <div className="bg-slate-50 p-3 rounded-lg border border-slate-200 max-h-48 overflow-y-auto space-y-2">
-                  {activeUsers.map(user => {
+                  {(editingEvent?.eventType === 'internal' ? activePicUsers : activeUsers).map(user => {
                     const isSelected = eventForm.participants.includes(user.name);
                     return (
                       <label key={user.id} className="flex items-center gap-3 p-2 rounded hover:bg-white border border-transparent hover:border-slate-200 cursor-pointer transition-colors">

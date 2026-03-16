@@ -18,9 +18,14 @@ service firebase.storage {
         || request.resource.contentType.matches('image/png');
     }
 
-    match /evidence/{allPaths=**} {
+    match /evidence/{taskId}/{subtaskId}/{legacyFileName} {
       allow read: if signedIn();
-      allow write: if signedIn()
+      allow write: if false;
+    }
+
+    match /evidence/{taskId}/{subtaskId}/{ownerId}/{allPaths=**} {
+      allow read: if signedIn();
+      allow write: if request.auth.uid == ownerId
         && request.resource.size < 10 * 1024 * 1024
         && allowedContentType();
     }

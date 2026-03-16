@@ -5,6 +5,7 @@ export default function CoePage(props) {
   const {
     coeViewMode,
     setCoeViewMode,
+    userRole,
     openEventModal,
     openInternalEventTaskModal,
     events,
@@ -71,9 +72,11 @@ export default function CoePage(props) {
               <button onClick={() => openEventModal()} className="bg-emerald-100 hover:bg-emerald-200 text-emerald-700 px-4 py-2 rounded-lg text-sm font-medium flex items-center justify-center gap-2 transition-colors whitespace-nowrap border border-emerald-200">
                 <Plus className="w-4 h-4" /> Add External Event
               </button>
-              <button onClick={openInternalEventTaskModal} className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-medium flex items-center justify-center gap-2 transition-colors whitespace-nowrap">
-                <Plus className="w-4 h-4" /> Add Internal Event
-              </button>
+              {userRole === 'PIC' && (
+                <button onClick={openInternalEventTaskModal} className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-medium flex items-center justify-center gap-2 transition-colors whitespace-nowrap">
+                  <Plus className="w-4 h-4" /> Add Internal Event
+                </button>
+              )}
             </div>
           </div>
         </div>
