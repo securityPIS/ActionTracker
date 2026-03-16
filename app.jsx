@@ -492,6 +492,15 @@ export default function App() {
   const [ganttTooltip, setGanttTooltip] = useState(null);
   const [showGanttFilters, setShowGanttFilters] = useState(false);
   const [showNotificationsPanel, setShowNotificationsPanel] = useState(false);
+  const [confirmationDialog, setConfirmationDialog] = useState({
+    open: false,
+    title: "",
+    message: "",
+    confirmLabel: "Ya, lanjutkan",
+    cancelLabel: "Batal",
+    tone: "blue",
+  });
+  const confirmationResolverRef = useRef(null);
 
   // Fetch Public Holidays
   useEffect(() => {
@@ -1189,6 +1198,32 @@ export default function App() {
     await Promise.all(unreadNotifications.map((notification) => updateDoc(doc(db, 'notifications', notification.id), { isRead: true })));
   };
 
+  const openConfirmationDialog = ({
+    title = "Konfirmasi",
+    message,
+    confirmLabel = "Ya, lanjutkan",
+    cancelLabel = "Batal",
+    tone = "blue",
+  }) => new Promise((resolve) => {
+    confirmationResolverRef.current = resolve;
+    setConfirmationDialog({
+      open: true,
+      title,
+      message,
+      confirmLabel,
+      cancelLabel,
+      tone,
+    });
+  });
+
+  const closeConfirmationDialog = (confirmed) => {
+    setConfirmationDialog((prev) => ({ ...prev, open: false }));
+    if (confirmationResolverRef.current) {
+      confirmationResolverRef.current(confirmed);
+      confirmationResolverRef.current = null;
+    }
+  };
+
   const handleNotificationClick = async (notification) => {
     if (!notification) return;
     await markNotificationAsRead(notification.id);
@@ -1229,7 +1264,13 @@ export default function App() {
         alert("Pekerjaan wajib menyertakan setidaknya satu file atau satu tautan bukti, atau catatan.");
         return;
     }
-    if (!confirm(`Apakah Anda yakin ingin mengirim subtask "${selectedSubtask.title}"? PIC akan menerima notifikasi untuk review.`)) {
+    const confirmed = await openConfirmationDialog({
+      title: "Kirim Subtask",
+      message: `Apakah Anda yakin ingin mengirim subtask "${selectedSubtask.title}"? PIC akan menerima notifikasi untuk review.`,
+      confirmLabel: "Ya, kirim",
+      tone: "emerald",
+    });
+    if (!confirmed) {
       return;
     }
     const parentId = selectedSubtask.parentId || selectedSubtask.taskId;
@@ -1372,7 +1413,13 @@ export default function App() {
     if (!task) return;
     const deletedSubtask = task.subtasks.find((subtask) => String(subtask.id) === String(subtaskId));
     if (!deletedSubtask) return;
-    if (!confirm(`Apakah Anda yakin ingin menghapus subtask "${deletedSubtask.title}"? Perubahan ini akan mengirimkan notifikasi ke assignee terkait.`)) return;
+    const confirmed = await openConfirmationDialog({
+      title: "Hapus Subtask",
+      message: `Apakah Anda yakin ingin menghapus subtask "${deletedSubtask.title}"? Perubahan ini akan mengirimkan notifikasi ke assignee terkait.`,
+      confirmLabel: "Ya, hapus",
+      tone: "red",
+    });
+    if (!confirmed) return;
     const updatedSubtasks = task.subtasks.filter(st => st.id !== subtaskId);
     const updated = recalculateProgress(task, updatedSubtasks);
     await Promise.all([
@@ -1420,7 +1467,13 @@ export default function App() {
     const confirmationMessage = editingSubtaskId
       ? `Apakah Anda yakin ingin menyimpan perubahan subtask "${subtaskFormTitle}"? Perubahan ini akan mengirimkan notifikasi ke assignee terkait.`
       : `Apakah Anda yakin ingin menambahkan subtask "${subtaskFormTitle}"? Assignee terkait akan menerima notifikasi tugas baru.`;
-    if (!confirm(confirmationMessage)) {
+    const confirmed = await openConfirmationDialog({
+      title: editingSubtaskId ? "Simpan Perubahan Subtask" : "Tambah Subtask",
+      message: confirmationMessage,
+      confirmLabel: editingSubtaskId ? "Ya, simpan" : "Ya, tambah",
+      tone: "blue",
+    });
+    if (!confirmed) {
       return;
     }
 
@@ -3519,6 +3572,56 @@ export default function App() {
           })()
         )
       }
+
+      {confirmationDialog.open && (
+        <div className="fixed inset-0 bg-slate-900/50 z-[120] flex items-center justify-center p-4">
+          <div className="w-full max-w-md overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
+            <div className={`flex items-start gap-3 border-b px-5 py-4 ${
+              confirmationDialog.tone === 'red'
+                ? 'border-red-100 bg-red-50'
+                : confirmationDialog.tone === 'emerald'
+                  ? 'border-emerald-100 bg-emerald-50'
+                  : 'border-blue-100 bg-blue-50'
+            }`}>
+              <div className={`mt-0.5 flex h-10 w-10 items-center justify-center rounded-full ${
+                confirmationDialog.tone === 'red'
+                  ? 'bg-red-100 text-red-600'
+                  : confirmationDialog.tone === 'emerald'
+                    ? 'bg-emerald-100 text-emerald-600'
+                    : 'bg-blue-100 text-blue-600'
+              }`}>
+                <AlertTriangle className="h-5 w-5" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-slate-900">{confirmationDialog.title}</h3>
+                <p className="mt-1 text-sm leading-6 text-slate-600">{confirmationDialog.message}</p>
+              </div>
+            </div>
+            <div className="flex justify-end gap-2 px-5 py-4">
+              <button
+                type="button"
+                onClick={() => closeConfirmationDialog(false)}
+                className="rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-600 transition-colors hover:bg-slate-50"
+              >
+                {confirmationDialog.cancelLabel}
+              </button>
+              <button
+                type="button"
+                onClick={() => closeConfirmationDialog(true)}
+                className={`rounded-lg px-4 py-2 text-sm font-medium text-white transition-colors ${
+                  confirmationDialog.tone === 'red'
+                    ? 'bg-red-600 hover:bg-red-700'
+                    : confirmationDialog.tone === 'emerald'
+                      ? 'bg-emerald-600 hover:bg-emerald-700'
+                      : 'bg-blue-600 hover:bg-blue-700'
+                }`}
+              >
+                {confirmationDialog.confirmLabel}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* TEMPLATE TASK MODAL */}
       {showTemplateModal && (
