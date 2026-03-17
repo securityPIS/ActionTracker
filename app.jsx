@@ -1361,6 +1361,19 @@ export default function App() {
     if (!task) return;
     const targetSubtask = task.subtasks.find((subtask) => String(subtask.id) === String(subtaskToRevise.id));
     if (!targetSubtask) return;
+    if (!reviseComment.trim()) {
+      alert("Komentar revisi wajib diisi.");
+      return;
+    }
+    const confirmed = await openConfirmationDialog({
+      title: "Kirim Revisi",
+      message: `Apakah Anda yakin ingin mengirim revisi untuk subtask "${targetSubtask.title}"? Assignee akan menerima notifikasi revisi.`,
+      confirmLabel: "Ya, kirim revisi",
+      tone: "red",
+    });
+    if (!confirmed) {
+      return;
+    }
     const newComment = { text: reviseComment, type: 'revision', user: currentUser.name, timestamp: getCurrentDateTime() };
     await syncSubtaskDoc(task, {
       ...targetSubtask,
@@ -1386,6 +1399,17 @@ export default function App() {
     if (!targetTaskId) return;
     const task = taskById.get(targetTaskId);
     if (!task) return;
+    const targetSubtask = task.subtasks.find((subtask) => String(subtask.id) === String(subtaskId));
+    if (!targetSubtask) return;
+    const confirmed = await openConfirmationDialog({
+      title: "Approve Subtask",
+      message: `Apakah Anda yakin ingin meng-approve subtask "${targetSubtask.title}"?`,
+      confirmLabel: "Ya, approve",
+      tone: "emerald",
+    });
+    if (!confirmed) {
+      return;
+    }
     const updatedSubtasks = task.subtasks.map(sub => String(sub.id) === String(subtaskId) ? { ...sub, status: 'completed', lastUpdated: getCurrentDateTime() } : sub);
     const updated = recalculateProgress(task, updatedSubtasks);
     const approvedSubtask = updated.subtasks.find((subtask) => String(subtask.id) === String(subtaskId));
