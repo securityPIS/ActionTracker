@@ -1396,11 +1396,11 @@ export default function App() {
 
   const approveSubtask = async (subtaskId, parentTaskId = null) => {
     const targetTaskId = parentTaskId || activeTask?.id;
-    if (!targetTaskId) return;
+    if (!targetTaskId) return false;
     const task = taskById.get(targetTaskId);
-    if (!task) return;
+    if (!task) return false;
     const targetSubtask = task.subtasks.find((subtask) => String(subtask.id) === String(subtaskId));
-    if (!targetSubtask) return;
+    if (!targetSubtask) return false;
     const confirmed = await openConfirmationDialog({
       title: "Approve Subtask",
       message: `Apakah Anda yakin ingin meng-approve subtask "${targetSubtask.title}"?`,
@@ -1408,26 +1408,43 @@ export default function App() {
       tone: "emerald",
     });
     if (!confirmed) {
-      return;
+      return false;
     }
-    const updatedSubtasks = task.subtasks.map(sub => String(sub.id) === String(subtaskId) ? { ...sub, status: 'completed', lastUpdated: getCurrentDateTime() } : sub);
-    const updated = recalculateProgress(task, updatedSubtasks);
-    const approvedSubtask = updated.subtasks.find((subtask) => String(subtask.id) === String(subtaskId));
-    await Promise.all([
-      updateDoc(doc(db, 'tasks', targetTaskId), { subtasks: updated.subtasks, progress: updated.progress }),
-      approvedSubtask ? syncSubtaskDoc(task, approvedSubtask) : Promise.resolve(),
-    ]);
-    if (approvedSubtask) {
-      const assigneeUser = getUserByName(approvedSubtask.assignee);
-      await createNotifications(assigneeUser ? [assigneeUser] : [], {
-        type: 'subtask_approved',
-        priority: 'medium',
-        title: 'Subtask di-approve',
-        message: `"${approvedSubtask.title}" telah di-approve oleh ${task.pic || currentUser.name}.`,
-        targetType: 'subtask',
-        targetId: String(approvedSubtask.id),
-        parentTaskId: String(targetTaskId),
-      });
+    try {
+      const approvalTimestamp = getCurrentDateTime();
+      const updatedSubtasks = task.subtasks.map((sub) =>
+        String(sub.id) === String(subtaskId)
+          ? { ...sub, status: 'completed', lastUpdated: approvalTimestamp }
+          : sub
+      );
+      const updated = recalculateProgress(task, updatedSubtasks);
+      const approvedSubtask = updated.subtasks.find((subtask) => String(subtask.id) === String(subtaskId));
+      await Promise.all([
+        updateDoc(doc(db, 'tasks', targetTaskId), { subtasks: updated.subtasks, progress: updated.progress }),
+        approvedSubtask ? syncSubtaskDoc(task, approvedSubtask) : Promise.resolve(),
+      ]);
+      if (approvedSubtask) {
+        setSelectedSubtask((prev) => (
+          prev && String(prev.id) === String(approvedSubtask.id)
+            ? { ...prev, ...approvedSubtask, parentId: prev.parentId || String(targetTaskId) }
+            : prev
+        ));
+        const assigneeUser = getUserByName(approvedSubtask.assignee);
+        await createNotifications(assigneeUser ? [assigneeUser] : [], {
+          type: 'subtask_approved',
+          priority: 'medium',
+          title: 'Subtask di-approve',
+          message: `"${approvedSubtask.title}" telah di-approve oleh ${task.pic || currentUser.name}.`,
+          targetType: 'subtask',
+          targetId: String(approvedSubtask.id),
+          parentTaskId: String(targetTaskId),
+        });
+      }
+      return true;
+    } catch (error) {
+      console.error('Error approving subtask:', error);
+      alert('Gagal meng-approve subtask. Silakan coba lagi.');
+      return false;
     }
   };
 
@@ -3102,7 +3119,17 @@ export default function App() {
                   <>
                     <button onClick={() => { openReviseModal({ id: selectedSubtask.parentId, title: selectedSubtask.parentTitle, pic: selectedSubtask.parentPic }, selectedSubtask); setShowUserTaskDetailModal(false); }} className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-sm font-medium rounded-lg shadow-sm flex items-center gap-2 transition-colors"><AlertCircle className="w-4 h-4" /> Revise</button>
                     {selectedSubtask.parentPic === currentUser.name && (
-                      <button onClick={() => { approveSubtask(selectedSubtask.id, selectedSubtask.parentId); setShowUserTaskDetailModal(false); }} className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white text-sm font-medium rounded-lg shadow-sm flex items-center gap-2 transition-colors"><Check className="w-4 h-4" /> Approve</button>
+                      <button
+                        onClick={async () => {
+                          const approved = await approveSubtask(selectedSubtask.id, selectedSubtask.parentId);
+                          if (approved) {
+                            setShowUserTaskDetailModal(false);
+                          }
+                        }}
+                        className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white text-sm font-medium rounded-lg shadow-sm flex items-center gap-2 transition-colors"
+                      >
+                        <Check className="w-4 h-4" /> Approve
+                      </button>
                     )}
                   </>
                 )}
