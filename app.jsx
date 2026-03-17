@@ -264,6 +264,52 @@ const addDays = (date, days) => {
 
 const diffDays = (start, end) => Math.round((end - start) / (1000 * 60 * 60 * 24));
 
+const getTimelinePercent = (date, start, segments, zoomLevel, edge = 'center') => {
+  if (!(date instanceof Date) || Number.isNaN(date.getTime()) || !(start instanceof Date) || Number.isNaN(start.getTime()) || !Array.isArray(segments) || segments.length === 0) {
+    return -1;
+  }
+
+  const segmentSpanDays = zoomLevel === 'week' ? 7 : 1;
+  const offsetDays = diffDays(start, date);
+  const segmentIndex = Math.floor(offsetDays / segmentSpanDays);
+  const dayInSegment = offsetDays - (segmentIndex * segmentSpanDays);
+
+  let segmentFraction = (dayInSegment + 0.5) / segmentSpanDays;
+  if (edge === 'start') {
+    segmentFraction = dayInSegment / segmentSpanDays;
+  } else if (edge === 'end') {
+    segmentFraction = (dayInSegment + 1) / segmentSpanDays;
+  }
+
+  return Math.min(100, Math.max(0, ((segmentIndex + segmentFraction) / segments.length) * 100));
+};
+
+const getTimelineMarkerPlacement = (date, start, segments, zoomLevel, edge = 'center') => {
+  if (!(date instanceof Date) || Number.isNaN(date.getTime()) || !(start instanceof Date) || Number.isNaN(start.getTime()) || !Array.isArray(segments) || segments.length === 0) {
+    return null;
+  }
+
+  const segmentSpanDays = zoomLevel === 'week' ? 7 : 1;
+  const offsetDays = diffDays(start, date);
+  if (offsetDays < 0) return null;
+
+  const segmentIndex = Math.floor(offsetDays / segmentSpanDays);
+  if (segmentIndex < 0 || segmentIndex >= segments.length) return null;
+
+  const dayInSegment = offsetDays - (segmentIndex * segmentSpanDays);
+  let offsetPercent = ((dayInSegment + 0.5) / segmentSpanDays) * 100;
+  if (edge === 'start') {
+    offsetPercent = (dayInSegment / segmentSpanDays) * 100;
+  } else if (edge === 'end') {
+    offsetPercent = ((dayInSegment + 1) / segmentSpanDays) * 100;
+  }
+
+  return {
+    segmentIndex,
+    offsetPercent: Math.min(100, Math.max(0, offsetPercent)),
+  };
+};
+
 const formatTimelineLabel = (date, zoomLevel) => {
   if (zoomLevel === 'week') {
     const weekEnd = addDays(date, 6);
@@ -1028,15 +1074,15 @@ export default function App() {
     }
 
     const mainTaskDeadlineDate = parseDateValue(activeTask.deadline);
-    const mainTaskDeadlinePos = mainTaskDeadlineDate
-      ? Math.min(100, Math.max(0, ((diffDays(start, mainTaskDeadlineDate) + 0.5) / totalDays) * 100))
-      : -1;
+    const mainTaskDeadlinePlacement = mainTaskDeadlineDate
+      ? getTimelineMarkerPlacement(mainTaskDeadlineDate, start, segments, ganttZoomLevel, 'center')
+      : null;
 
     const today = new Date();
     today.setHours(0, 0, 0, 0);
-    const todayPos = today >= start && today <= end
-      ? Math.min(100, Math.max(0, ((diffDays(start, today) + 0.5) / totalDays) * 100))
-      : -1;
+    const todayPlacement = today >= start && today <= end
+      ? getTimelineMarkerPlacement(today, start, segments, ganttZoomLevel, 'center')
+      : null;
 
     return {
       start,
@@ -1044,8 +1090,8 @@ export default function App() {
       segments,
       subtasks: visibleSubtasks,
       totalDays,
-      mainTaskDeadlinePos,
-      todayPos,
+      mainTaskDeadlinePlacement,
+      todayPlacement,
       zoomLevel: ganttZoomLevel,
     };
   }, [activeTask, ganttRangeStart, ganttRangeEnd, ganttShowCompleted, ganttZoomLevel]);
@@ -2580,14 +2626,26 @@ export default function App() {
                               </div>
 
                               <div className="relative">
-                                {ganttData.todayPos >= 0 && (
+                                {(ganttData.todayPlacement || ganttData.mainTaskDeadlinePlacement) && (
                                   <div className="pointer-events-none absolute bottom-0 top-0 left-56 right-0 z-10">
-                                    <div className="absolute bottom-0 top-0 w-px bg-blue-400/80" style={{ left: `${ganttData.todayPos}%` }} />
-                                  </div>
-                                )}
-                                {ganttData.mainTaskDeadlinePos >= 0 && (
-                                  <div className="pointer-events-none absolute bottom-0 top-0 left-56 right-0 z-10">
-                                    <div className="absolute bottom-0 top-0 w-px bg-red-400/80" style={{ left: `${ganttData.mainTaskDeadlinePos}%` }} />
+                                    <div className="grid h-full" style={{ gridTemplateColumns: `repeat(${ganttData.segments.length}, minmax(${ganttData.zoomLevel === 'week' ? '88px' : '42px'}, 1fr))` }}>
+                                      {ganttData.segments.map((segment, index) => (
+                                        <div key={`marker-${segment.toISOString()}`} className="relative h-full">
+                                          {ganttData.todayPlacement && ganttData.todayPlacement.segmentIndex === index && (
+                                            <div
+                                              className="absolute bottom-0 top-0 w-0.5 bg-blue-500/90"
+                                              style={{ left: `calc(${ganttData.todayPlacement.offsetPercent}% - 1px)` }}
+                                            />
+                                          )}
+                                          {ganttData.mainTaskDeadlinePlacement && ganttData.mainTaskDeadlinePlacement.segmentIndex === index && (
+                                            <div
+                                              className="absolute bottom-0 top-0 w-0.5 bg-red-500/90"
+                                              style={{ left: `calc(${ganttData.mainTaskDeadlinePlacement.offsetPercent}% - 1px)` }}
+                                            />
+                                          )}
+                                        </div>
+                                      ))}
+                                    </div>
                                   </div>
                                 )}
 
@@ -2596,9 +2654,9 @@ export default function App() {
                                     const subStartDate = parseDateValue(sub.startDate) || addDays(sub.deadlineDate, -3);
                                     const clampedStartDate = subStartDate < ganttData.start ? ganttData.start : subStartDate;
                                     const clampedEndDate = sub.deadlineDate > ganttData.end ? ganttData.end : sub.deadlineDate;
-                                    const visibleDurationDays = Math.max(1, diffDays(clampedStartDate, clampedEndDate) + 1);
-                                    const startPercent = (diffDays(ganttData.start, clampedStartDate) / ganttData.totalDays) * 100;
-                                    const widthPercent = Math.max((visibleDurationDays / ganttData.totalDays) * 100, ganttData.zoomLevel === 'week' ? 7 : 3.2);
+                                    const startPercent = getTimelinePercent(clampedStartDate, ganttData.start, ganttData.segments, ganttData.zoomLevel, 'start');
+                                    const endPercent = getTimelinePercent(clampedEndDate, ganttData.start, ganttData.segments, ganttData.zoomLevel, 'end');
+                                    const widthPercent = Math.max(endPercent - startPercent, ganttData.zoomLevel === 'week' ? 7 : 3.2);
                                     let barColor = 'bg-blue-500';
                                     if (sub.status === 'completed') barColor = 'bg-green-500';
                                     if (sub.status === 'revision') barColor = 'bg-red-500';
