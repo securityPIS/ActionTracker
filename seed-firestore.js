@@ -4,18 +4,19 @@
 //   $env:SEED_USER_PASSWORD="replace-with-a-strong-temp-password"
 //   node seed-firestore.js
 
+import "dotenv/config";
 import { initializeApp } from "firebase/app";
 import { getFirestore, collection, doc, setDoc } from "firebase/firestore";
 import { getAuth, createUserWithEmailAndPassword } from "firebase/auth";
 
 const firebaseConfig = {
-  apiKey: "AIzaSyCgnPJ3xZ4RhuEv0mMuyhANnUdb3f3rNEs",
-  authDomain: "actiontracker-91ea5.firebaseapp.com",
-  projectId: "actiontracker-91ea5",
-  storageBucket: "actiontracker-91ea5.firebasestorage.app",
-  messagingSenderId: "136493828217",
-  appId: "1:136493828217:web:f56d743328391bffa2aca8",
-  measurementId: "G-J8ZWREQBFJ",
+  apiKey: process.env.VITE_FIREBASE_API_KEY,
+  authDomain: process.env.VITE_FIREBASE_AUTH_DOMAIN,
+  projectId: process.env.VITE_FIREBASE_PROJECT_ID,
+  storageBucket: process.env.VITE_FIREBASE_STORAGE_BUCKET,
+  messagingSenderId: process.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
+  appId: process.env.VITE_FIREBASE_APP_ID,
+  measurementId: process.env.VITE_FIREBASE_MEASUREMENT_ID,
 };
 
 const app = initializeApp(firebaseConfig);
